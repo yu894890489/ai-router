@@ -1,7 +1,26 @@
-import { getEncoding } from 'js-tiktoken';
+import { get_encoding } from '@dqbd/tiktoken';
+import type { Tiktoken } from '@dqbd/tiktoken';
 import type { AnthropicRequest, ContentBlock, Message } from '../types.js';
 
-const enc = getEncoding('o200k_base');
+// @dqbd/tiktoken 是 WASM 版 tiktoken，对 CJK 大文本的编码速度比 js-tiktoken
+// 快几个数量级。encoding 实例持有 WASM 内存，必须 .free() 释放：
+// 这里做成进程级单例，懒创建、复用，进程退出时释放。
+let enc: Tiktoken | null = null;
+
+function getEnc(): Tiktoken {
+  if (!enc) {
+    enc = get_encoding('o200k_base');
+    const cleanup = () => disposeTokenizer();
+    process.once('exit', cleanup);
+  }
+  return enc;
+}
+
+/** 释放 WASM 内存；仅供进程收尾或测试调用，释放后会重新懒加载。 */
+export function disposeTokenizer(): void {
+  enc?.free();
+  enc = null;
+}
 
 function blockText(block: ContentBlock): string {
   if (typeof block.text === 'string') return block.text;
@@ -10,7 +29,7 @@ function blockText(block: ContentBlock): string {
 
 export function countText(text: string): number {
   if (text.length === 0) return 0;
-  return enc.encode(text).length;
+  return getEnc().encode(text).length;
 }
 
 export function countMessages(messages: Message[]): number {
