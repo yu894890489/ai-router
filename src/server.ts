@@ -5,8 +5,9 @@ import { buildSummarizer } from './compact/summarizer.js';
 import { loadConfig, parseModelRef, type RouterConfig } from './config.js';
 import { AuthError, extractApiKey, extractSessionId, resolveProject } from './pipeline/auth.js';
 import { guardContext } from './pipeline/context-guard.js';
-import { executeWithFailover, selectChain, type Candidate } from './pipeline/router.js';
+import { executeWithFailover, resolveChainRefs, selectChain, type Candidate } from './pipeline/router.js';
 import { applySpoof } from './pipeline/spoof.js';
+import { extractTitle } from './pipeline/title.js';
 import { ProviderError, type Provider } from './providers/base.js';
 import { createProviders } from './providers/index.js';
 import { CircuitBreaker, SessionStore } from './session/store.js';
@@ -101,12 +102,27 @@ export function createApp(configPath: string): Hono {
     storage.writeBody(logId, 'request', body);
 
     let compactInfo: { before: number; after: number } | null = null;
+    let lastBefore: number | null = null;
+
+    // 会话台账：title 仅首次写入，lastSeen/lastTokens 每次更新（存储失败不阻断转发）
+    const touchSession = () => {
+      if (!sessionId) return;
+      storage.sessions.touchSession({
+        sessionId,
+        project,
+        title: extractTitle(body.messages),
+        tokens: lastBefore ?? 0,
+      });
+    };
 
     try {
-      // 3. 场景路由：按客户端模型名查 rules（精确匹配），缺省落 "*" 兜底链
-      const chainRefs = config.routing.rules[body.model] ?? config.routing.rules['*'];
+      // 3. 场景路由：rules 精确匹配 + "*" 兜底；会话 override 置顶（钉住优先、规则链兜底）
+      const ruleRefs = config.routing.rules[body.model] ?? config.routing.rules['*'];
+      const overrideRef = sessionId ? storage.sessions.getOverride(sessionId) : null;
+      const chainRefs = resolveChainRefs(ruleRefs, overrideRef);
       // 4. 链选择（session 粘性 > 配置顺序，过滤熔断/封禁；键均为 ref）
-      const selectedRefs = selectChain(chainRefs, breaker, sessions, sessionId);
+      // override 存在时粘性不前置（钉住 ref 已在链首），避免旧绑定与覆盖打架
+      const selectedRefs = selectChain(chainRefs, breaker, sessions, overrideRef ? null : sessionId);
       // refs → Candidate（loadConfig 已校验 ref 合法，这里防御性跳过异常项）
       const candidates: Candidate[] = [];
       for (const ref of selectedRefs) {
@@ -137,6 +153,7 @@ export function createApp(configPath: string): Hono {
             config.compact,
             summarizer,
           );
+          lastBefore = guarded.before;
           if (guarded.compacted) {
             compactInfo = { before: guarded.before, after: guarded.after };
           }
@@ -149,6 +166,7 @@ export function createApp(configPath: string): Hono {
       );
 
       // compactInfo 在回调闭包内赋值，TS 控制流会把它窄化为 null，这里显式还原声明类型
+      touchSession();
       const compact = compactInfo as { before: number; after: number } | null;
       const baseLog = {
         provider: candidate.provider.name,
@@ -201,6 +219,7 @@ export function createApp(configPath: string): Hono {
       const status = isPE && e.status && e.status >= 400 && e.status < 600 ? e.status : 503;
       const type = status === 401 || status === 403 ? 'authentication_error' : 'overloaded_error';
       const message = e instanceof Error ? e.message : String(e);
+      touchSession();
       storage.finish(logId, {
         status: 'error',
         error: message,

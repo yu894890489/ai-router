@@ -20,6 +20,10 @@ export class SessionStore {
       expiresAt: Date.now() + this.ttlSeconds * 1000,
     });
   }
+
+  unbind(sessionId: string): void {
+    this.bindings.delete(sessionId);
+  }
 }
 
 interface BreakerState {

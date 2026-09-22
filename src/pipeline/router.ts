@@ -13,6 +13,12 @@ export interface Candidate {
   ref: string;
 }
 
+/** 规则链叠加会话覆盖：override 置顶并去重；null 原样返回 */
+export function resolveChainRefs(ruleRefs: string[], overrideRef: string | null): string[] {
+  if (!overrideRef) return ruleRefs;
+  return [overrideRef, ...ruleRefs.filter((r) => r !== overrideRef)];
+}
+
 /**
  * 链元素为 ref 字符串（"厂商/别名"）。
  * session 粘性与熔断过滤的键均为 ref。
