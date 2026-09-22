@@ -26,10 +26,55 @@ Claude Code 接入（在每个项目目录的 shell 或 `~/.claude/settings.json
 
 ## 核心行为
 
-- **failover**：按 `routing.default` 顺序尝试；网络错误/超时/5xx/429 切下一家；401/403 封禁该厂商；session 粘性 5 分钟；连续失败 3 次熔断 60 秒。
-- **上下文压缩**：上下文超过目标厂商窗口 × 0.85 时，保留 system 与最近 6 轮，中段切分后由压缩模型总结为 `<context-summary>` 注入。压缩模型首选 `compact.provider/model`，失败时目标厂商兜底。
+- **多模型 + 场景路由**：每家厂商在 `providers.<厂商>.models` 下配置多个模型别名（`别名 -> { upstream, contextWindow }`）；`routing.rules` 按 Claude Code 发来的模型名（精确匹配，`"*"` 兜底）选择候选链，链元素为 `厂商/别名` ref。failover 沿链按序尝试；网络错误/超时/5xx/429 切下一个；401/403 封禁该 ref；session 粘性 5 分钟（绑定到 ref）；同一 ref 连续失败 3 次熔断 60 秒。别名 → 上游模型名的映射只发生在 Provider 内部。
+- **上下文压缩**：上下文超过目标模型窗口 × 0.85 时，保留 system 与最近 6 轮，中段切分后由压缩模型总结为 `<context-summary>` 注入。压缩模型首选 `compact.target`（`厂商/别名` ref），失败时用当前转发目标兜底。
 - **伪装**：转发时携带 Claude Code 客户端特征（user-agent、`x-app: cli`、system 首块、metadata.user_id）。
 - **日志**：结构化记录在 `data/router.db`（SQLite，表 `requests`）；完整请求/响应体在 `data/logs/<项目>/<日期>.jsonl`。
+
+## 配置（v2）
+
+```yaml
+providers:
+  kimi:
+    baseUrl: https://api.moonshot.cn/anthropic
+    apiKey: sk-your-moonshot-key
+    authHeader: bearer
+    userAgent: claude-cli/2.0.14 (external, cli)
+    models:   # 本地别名 -> 上游真实模型名 + 上下文窗口
+      k3-1m:           { upstream: "kimi-k3[1m]", contextWindow: 1000000 }
+      k3:              { upstream: kimi-k3, contextWindow: 256000 }
+      kimi-for-coding: { upstream: kimi-for-coding, contextWindow: 256000 }
+  volcengine:
+    baseUrl: https://ark.cn-beijing.volces.com/api/coding
+    apiKey: your-ark-coding-plan-key
+    authHeader: bearer
+    userAgent: claude-cli/2.0.14 (external, cli)
+    models:
+      glm-5.3:       { upstream: glm-5.3, contextWindow: 256000 }
+      glm-5.3-flash: { upstream: glm-5.3-flash, contextWindow: 256000 }
+  bailian:
+    baseUrl: https://coding.dashscope.aliyuncs.com/apps/anthropic
+    apiKey: sk-your-dashscope-coding-plan-key
+    authHeader: bearer
+    userAgent: claude-cli/2.0.14 (external, cli)
+    models:
+      glm-5: { upstream: glm-5, contextWindow: 256000 }
+
+routing:
+  # key = Claude Code 发来的模型名（精确匹配，"*" 为必填兜底）
+  # 链元素为 "厂商/模型别名" ref，按序 failover；所有 ref 必须指向已定义的厂商与别名
+  rules:
+    claude-opus-4-6:   [kimi/k3-1m, volcengine/glm-5.3, bailian/glm-5]
+    claude-sonnet-4-6: [kimi/kimi-for-coding, volcengine/glm-5.3, bailian/glm-5]
+    claude-haiku-4-5:  [volcengine/glm-5.3-flash, bailian/glm-5]
+    "*":               [kimi/kimi-for-coding, volcengine/glm-5.3, bailian/glm-5]
+
+compact:
+  target: bailian/glm-5    # 压缩总结首选（"厂商/别名" ref）
+  fallbackToTarget: true   # 首选失败时用当前转发目标兜底
+```
+
+完整可复制的样例见 `config.example.yaml`。
 
 ## 命令
 
