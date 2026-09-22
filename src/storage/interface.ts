@@ -18,9 +18,29 @@ export interface RequestLogPatch {
   error?: string;
 }
 
+export interface SessionInfo {
+  sessionId: string;
+  project: string;
+  title: string;
+  overrideRef: string | null;
+  lastTokens: number;
+  createdAt: string;
+  lastSeen: string;
+}
+
+export interface SessionDirectory {
+  /** 每次请求调用：首次见到写入 title/project，之后仅更新 lastSeen/lastTokens */
+  touchSession(s: { sessionId: string; project: string; title: string; tokens: number }): void;
+  setOverride(sessionId: string, ref: string | null): void;
+  getOverride(sessionId: string): string | null;
+  getSession(sessionId: string): SessionInfo | null;
+  listRecent(limit: number): SessionInfo[];
+}
+
 export interface LogStorage {
   start(entry: NewRequestLog): string;
   finish(id: string, patch: RequestLogPatch): void;
   writeBody(id: string, kind: 'request' | 'response', payload: unknown): void;
+  sessions: SessionDirectory;
   close(): void;
 }
