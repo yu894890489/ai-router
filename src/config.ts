@@ -2,16 +2,20 @@ import { readFileSync } from 'node:fs';
 import YAML from 'yaml';
 import { z } from 'zod';
 
+const modelEntrySchema = z.object({
+  upstream: z.string().min(1),
+  contextWindow: z.number().int().positive(),
+});
+
 const providerSchema = z.object({
   baseUrl: z.url(),
   apiKey: z.string().min(1),
   authHeader: z.enum(['x-api-key', 'bearer']),
-  contextWindow: z.number().int().positive(),
   userAgent: z.string().min(1),
   extraHeaders: z.record(z.string(), z.string()).default({}),
-  modelMap: z
-    .record(z.string(), z.string())
-    .refine((m) => Object.keys(m).length > 0, { message: 'modelMap 至少需要一个映射' }),
+  models: z
+    .record(z.string(), modelEntrySchema)
+    .refine((m) => Object.keys(m).length > 0, { message: 'models 至少需要一个模型别名' }),
 });
 
 const configSchema = z.object({
@@ -24,14 +28,15 @@ const configSchema = z.object({
     .default({ host: '127.0.0.1', port: 3456 }),
   accessKeys: z.record(z.string(), z.string().nullable()),
   providers: z.record(z.string(), providerSchema),
-  routing: z.object({ default: z.array(z.string()).min(1) }),
+  routing: z.object({
+    rules: z.record(z.string(), z.array(z.string().min(1)).min(1)),
+  }),
   compact: z.object({
     thresholdRatio: z.number().min(0.1).max(1).default(0.85),
     targetRatio: z.number().min(0.1).max(1).default(0.7),
     keepRecentTurns: z.number().int().min(1).default(6),
     chunkTokens: z.number().int().positive().default(40000),
-    provider: z.string(),
-    model: z.string(),
+    target: z.string().min(1),
     fallbackToTarget: z.boolean().default(true),
   }),
   failover: z
@@ -57,8 +62,26 @@ const configSchema = z.object({
 
 export type RouterConfig = z.infer<typeof configSchema>;
 export type ProviderConfig = z.infer<typeof providerSchema>;
+export type ModelEntry = z.infer<typeof modelEntrySchema>;
 export type CompactConfig = RouterConfig['compact'];
 export type StorageConfig = RouterConfig['storage'];
+
+/** 把 "厂商/模型别名" ref 按第一个 / 切分。无 /、provider 或 alias 为空时抛错。 */
+export function parseModelRef(ref: string): { provider: string; alias: string } {
+  const idx = ref.indexOf('/');
+  if (idx === -1) {
+    throw new Error(`模型 ref 缺少 "/"，应为 "厂商/别名" 格式: "${ref}"`);
+  }
+  const provider = ref.slice(0, idx);
+  const alias = ref.slice(idx + 1);
+  if (!provider) {
+    throw new Error(`模型 ref 的 provider 为空: "${ref}"`);
+  }
+  if (!alias) {
+    throw new Error(`模型 ref 的 alias 为空: "${ref}"`);
+  }
+  return { provider, alias };
+}
 
 export function loadConfig(path: string): RouterConfig {
   const raw = YAML.parse(readFileSync(path, 'utf8'));
@@ -70,13 +93,28 @@ export function loadConfig(path: string): RouterConfig {
     throw new Error(`配置文件非法 (${path}):\n${issues}`);
   }
   const cfg = result.data;
-  for (const name of cfg.routing.default) {
-    if (!cfg.providers[name]) {
-      throw new Error(`routing.default 引用了未定义的厂商: ${name}`);
+
+  if (!('*' in cfg.routing.rules)) {
+    throw new Error('routing.rules 缺少 "*" 兜底规则');
+  }
+
+  const checkRef = (ref: string, where: string) => {
+    const { provider, alias } = parseModelRef(ref); // 格式错误时抛带 ref 信息的 Error
+    const p = cfg.providers[provider];
+    if (!p) {
+      throw new Error(`${where} 引用了未定义的厂商: "${ref}"`);
+    }
+    if (!p.models[alias]) {
+      throw new Error(`${where} 引用了厂商 "${provider}" 下未定义的模型别名: "${ref}"`);
+    }
+  };
+
+  for (const [scene, chain] of Object.entries(cfg.routing.rules)) {
+    for (const ref of chain) {
+      checkRef(ref, `routing.rules["${scene}"]`);
     }
   }
-  if (!cfg.providers[cfg.compact.provider]) {
-    throw new Error(`compact.provider 引用了未定义的厂商: ${cfg.compact.provider}`);
-  }
+  checkRef(cfg.compact.target, 'compact.target');
+
   return cfg;
 }
