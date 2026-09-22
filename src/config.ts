@@ -99,12 +99,19 @@ export function loadConfig(path: string): RouterConfig {
   }
 
   const checkRef = (ref: string, where: string) => {
-    const { provider, alias } = parseModelRef(ref); // 格式错误时抛带 ref 信息的 Error
-    const p = cfg.providers[provider];
-    if (!p) {
+    let provider: string;
+    let alias: string;
+    try {
+      ({ provider, alias } = parseModelRef(ref));
+    } catch (e) {
+      // 格式错误时补充出处（哪条 rule 或 compact.target）再抛出
+      throw new Error(`${where} 的模型 ref 非法: ${(e as Error).message}`);
+    }
+    // 用 Object.hasOwn 防原型链键（如 constructor、toString）被误认为已定义
+    if (!Object.hasOwn(cfg.providers, provider)) {
       throw new Error(`${where} 引用了未定义的厂商: "${ref}"`);
     }
-    if (!p.models[alias]) {
+    if (!Object.hasOwn(cfg.providers[provider]!.models, alias)) {
       throw new Error(`${where} 引用了厂商 "${provider}" 下未定义的模型别名: "${ref}"`);
     }
   };

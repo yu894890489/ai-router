@@ -128,6 +128,32 @@ describe('loadConfig', () => {
     const bad = VALID.replace('target: bailian/glm-5', 'target: bailian');
     expect(() => loadConfig(writeTmp(bad))).toThrow(/bailian/);
   });
+
+  it('原型链键不会被误认为已定义的厂商（Object.hasOwn 校验）', () => {
+    const bad = VALID.replace(
+      'claude-opus-4-6: [kimi/k3-1m',
+      'claude-opus-4-6: [toString/k3-1m',
+    );
+    expect(() => loadConfig(writeTmp(bad))).toThrow(/未定义的厂商.*toString\/k3-1m/);
+  });
+
+  it('原型链键不会被误认为已定义的模型别名（Object.hasOwn 校验）', () => {
+    const bad = VALID.replace('target: bailian/glm-5', 'target: bailian/constructor');
+    expect(() => loadConfig(writeTmp(bad))).toThrow(/未定义的模型别名.*bailian\/constructor/);
+  });
+
+  it('rules 中 ref 缺 / 时报错并补充出处（哪条 rule）', () => {
+    const bad = VALID.replace(
+      'claude-opus-4-6: [kimi/k3-1m',
+      'claude-opus-4-6: [kimi-k3-1m',
+    );
+    expect(() => loadConfig(writeTmp(bad))).toThrow(/routing\.rules\["claude-opus-4-6"\]/);
+  });
+
+  it('compact.target 缺 / 时报错并补充出处（compact.target）', () => {
+    const bad = VALID.replace('target: bailian/glm-5', 'target: bailian');
+    expect(() => loadConfig(writeTmp(bad))).toThrow(/compact\.target/);
+  });
 });
 
 describe('parseModelRef', () => {
