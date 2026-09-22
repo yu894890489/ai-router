@@ -68,7 +68,7 @@ ai-router/  (Node.js 24 + TypeScript + Hono)
 压缩流程：
 
 1. **保护头部**：system prompt（含 Claude Code 工具定义）原样保留，绝不压缩
-2. **保护尾部**：最近 N 轮对话（默认 6 轮，可配）原样保留
+2. **保护尾部**：最近 N 轮对话（默认 6 轮，可配；1 轮 = 一条 user 消息 + 其对应的 assistant 回复，含其中的 tool_use/tool_result 块）原样保留
 3. **中间段切分**：剩余历史消息按 token 数切成若干 chunk（每 chunk ≤ 压缩模型安全窗口）
 4. **AI 总结**：每个 chunk 发给压缩模型，固定 prompt 模板要求保留：已完成的操作、关键文件路径、重要决策、未解决的 TODO
 5. **重组**：`system + [压缩摘要块] + 最近 N 轮`；摘要块用 `<context-summary>` 边界标记包裹，附注此前轮次已压缩
