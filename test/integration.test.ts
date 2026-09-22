@@ -58,7 +58,7 @@ function startMock(mode: 'ok' | 'fail500'): Promise<MockHandle> {
   });
 }
 
-async function setup(opts: { p1: 'ok' | 'fail500'; contextWindow?: number }) {
+async function setup(opts: { p1: 'ok' | 'fail500'; contextWindow?: number; p2ContextWindow?: number }) {
   const p1 = await startMock(opts.p1);
   const p2 = await startMock('ok');
   const dir = mkdtempSync(join(tmpdir(), 'ai-router-e2e-'));
@@ -83,7 +83,7 @@ providers:
     baseUrl: ${p2.url}
     apiKey: k2
     authHeader: bearer
-    contextWindow: 262144
+    contextWindow: ${opts.p2ContextWindow ?? 262144}
     userAgent: ua
     modelMap: { "*": p2-model }
 routing: { default: [p1, p2] }
@@ -190,6 +190,34 @@ describe('集成：项目归属兜底', () => {
     const db = new DatabaseSync(dbPath);
     const row = db.prepare('SELECT * FROM requests ORDER BY created_at DESC LIMIT 1').get() as Record<string, unknown>;
     expect(row.project).toBe('D:\\work\\inferred-proj');
+    db.close();
+  });
+});
+
+describe('集成：failover 后 compactInfo 不残留', () => {
+  it('p1 压缩成功但发送失败，failover 到不压缩的 p2 后日志 compacted=0', async () => {
+    const { app, dbPath, p1, p2 } = await setup({ p1: 'fail500', contextWindow: 100, p2ContextWindow: 262144 });
+    const messages = [];
+    for (let i = 0; i < 6; i++) {
+      messages.push(
+        { role: 'user', content: `问题${i} ${'很长的内容'.repeat(50)}` },
+        { role: 'assistant', content: `回答${i}` },
+      );
+    }
+    const res = await post(app, 'sk-proj-a', { ...CHAT, messages });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('来自mock的回答');
+    // p1 触发了压缩（收到 <context-summary>）但 500 失败；p2 兜底成功且未压缩
+    const p1Req = p1.lastRequest()!;
+    expect((p1Req.messages as Array<{ content: string }>)[0].content).toContain('<context-summary>');
+    const p2Req = p2.lastRequest()!;
+    expect((p2Req.messages as Array<{ content: string }>)[0].content).not.toContain('<context-summary>');
+    await new Promise((r) => setTimeout(r, 200));
+    const db = new DatabaseSync(dbPath);
+    const row = db.prepare('SELECT * FROM requests ORDER BY created_at DESC LIMIT 1').get() as Record<string, unknown>;
+    expect(row.provider).toBe('p2');
+    expect(row.failovered).toBe(1);
+    expect(row.compacted).toBe(0);
     db.close();
   });
 });
