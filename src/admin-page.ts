@@ -51,7 +51,10 @@ function fmtTs(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: fal
 function fmtWindow(n) { return n >= 1000000 ? (n / 1048576).toFixed(0) + 'M' : Math.round(n / 1024) + 'K'; }
 
 async function api(path, opts) {
-  const res = await fetch(path, Object.assign({ headers: { 'x-api-key': KEY } }, opts || {}));
+  opts = opts || {};
+  // 深合并 headers：opts.headers 会整体覆盖默认头，必须保留 x-api-key
+  const headers = Object.assign({ 'x-api-key': KEY }, opts.headers || {});
+  const res = await fetch(path, Object.assign({}, opts, { headers: headers }));
   if (res.status === 401) { showKey('Key 无效，请重新输入'); throw new Error('401'); }
   return res.json();
 }
