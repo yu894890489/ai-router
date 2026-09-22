@@ -2,10 +2,10 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { watch } from 'node:fs';
 import { buildSummarizer } from './compact/summarizer.js';
-import { loadConfig, type RouterConfig } from './config.js';
+import { loadConfig, parseModelRef, type RouterConfig } from './config.js';
 import { AuthError, extractApiKey, extractSessionId, resolveProject } from './pipeline/auth.js';
 import { guardContext } from './pipeline/context-guard.js';
-import { executeWithFailover, selectChain } from './pipeline/router.js';
+import { executeWithFailover, selectChain, type Candidate } from './pipeline/router.js';
 import { applySpoof } from './pipeline/spoof.js';
 import { ProviderError, type Provider } from './providers/base.js';
 import { createProviders } from './providers/index.js';
@@ -53,9 +53,9 @@ export function createApp(configPath: string): Hono {
   watch(configPath, () => {
     try {
       const config = loadConfig(configPath);
-      // apiKey 变化的厂商解除 401/403 封禁（熔断计数保留）
+      // apiKey 变化的厂商解除其全部模型 ref 的 401/403 封禁（熔断计数保留）
       for (const name of diffUnbanTargets(state.config, config)) {
-        state.breaker.unban(name);
+        state.breaker.unbanPrefix(name + '/');
       }
       state = { ...state, config, providers: createProviders(config) };
       console.log('[config] 已热重载');
@@ -96,29 +96,44 @@ export function createApp(configPath: string): Hono {
     let compactInfo: { before: number; after: number } | null = null;
 
     try {
-      // 3. 厂商链选择（session 粘性 > 配置顺序，过滤熔断/封禁）
-      const chain = selectChain(config.routing.default, breaker, sessions, sessionId);
-      const candidates = chain
-        .map((n) => providers.get(n))
-        .filter((p): p is Provider => Boolean(p));
+      // 3. 场景路由：按客户端模型名查 rules（精确匹配），缺省落 "*" 兜底链
+      const chainRefs = config.routing.rules[body.model] ?? config.routing.rules['*'] ?? [];
+      // 4. 链选择（session 粘性 > 配置顺序，过滤熔断/封禁；键均为 ref）
+      const selectedRefs = selectChain(chainRefs, breaker, sessions, sessionId);
+      // refs → Candidate（loadConfig 已校验 ref 合法，这里防御性跳过异常项）
+      const candidates: Candidate[] = [];
+      for (const ref of selectedRefs) {
+        try {
+          const { provider, alias } = parseModelRef(ref);
+          const p = providers.get(provider);
+          if (p) candidates.push({ provider: p, alias, ref });
+        } catch {
+          console.warn(`[routing] 跳过非法 ref: ${ref}`);
+        }
+      }
       if (candidates.length === 0) {
         throw new ProviderError('所有厂商均不可用（熔断或封禁中）', 503, false);
       }
 
-      // 4-6. 每次尝试：context-guard（按该厂商窗口）→ spoof → send
-      // 注意：spoof 传 body.model（客户端原名），模型映射唯一发生在 Provider.send 内部，
-      // 避免对含精确映射 + "*" 的 modelMap 二次映射错配；映射后名字取 result.upstreamModel。
-      const { result, provider, failovered } = await executeWithFailover(
+      // 5-7. 每次尝试：context-guard（按该候选别名的窗口）→ spoof（写别名）→ send
+      // 注意：spoof/send 都传模型别名，别名→上游名的映射唯一发生在 Provider 内部；
+      // 映射后的真实上游名取 result.upstreamModel 供日志。
+      const { result, candidate, failovered } = await executeWithFailover(
         candidates,
-        async (p) => {
+        async (cand) => {
           // 每次尝试开头重置，避免前一厂商的压缩结果残留到未触发压缩的厂商
           compactInfo = null;
-          const summarizer = buildSummarizer(config, providers, p);
-          const guarded = await guardContext(body, p.contextWindow, config.compact, summarizer);
+          const summarizer = buildSummarizer(config, providers, cand);
+          const guarded = await guardContext(
+            body,
+            cand.provider.contextWindowFor(cand.alias),
+            config.compact,
+            summarizer,
+          );
           if (guarded.compacted) {
             compactInfo = { before: guarded.before, after: guarded.after };
           }
-          return applySpoof(guarded.req, body.model);
+          return applySpoof(guarded.req, cand.alias);
         },
         config.failover.requestTimeoutMs,
         breaker,
@@ -129,7 +144,7 @@ export function createApp(configPath: string): Hono {
       // compactInfo 在回调闭包内赋值，TS 控制流会把它窄化为 null，这里显式还原声明类型
       const compact = compactInfo as { before: number; after: number } | null;
       const baseLog = {
-        provider: provider.name,
+        provider: candidate.provider.name,
         upstreamModel: result.upstreamModel,
         compacted: compact !== null,
         compactBefore: compact?.before,

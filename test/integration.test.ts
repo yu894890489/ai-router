@@ -76,18 +76,20 @@ providers:
     baseUrl: ${p1.url}
     apiKey: k1
     authHeader: bearer
-    contextWindow: ${opts.contextWindow ?? 262144}
     userAgent: ua
-    modelMap: { "*": p1-model }
+    models:
+      main: { upstream: p1-model, contextWindow: ${opts.contextWindow ?? 262144} }
   p2:
     baseUrl: ${p2.url}
     apiKey: k2
     authHeader: bearer
-    contextWindow: ${opts.p2ContextWindow ?? 262144}
     userAgent: ua
-    modelMap: { "*": p2-model }
-routing: { default: [p1, p2] }
-compact: { provider: p2, model: p2-model, keepRecentTurns: 2, chunkTokens: 500 }
+    models:
+      main: { upstream: p2-model, contextWindow: ${opts.p2ContextWindow ?? 262144} }
+routing:
+  rules:
+    "*": [p1/main, p2/main]
+compact: { target: p2/main, keepRecentTurns: 2, chunkTokens: 500 }
 failover: { requestTimeoutMs: 5000 }
 storage: { sqlitePath: ${dbPath}, jsonlDir: ${join(dir, 'logs').replace(/\\/g, '/')} }
 `,

@@ -68,4 +68,30 @@ describe('CircuitBreaker', () => {
     b.unban('other');
     expect(b.canUse('other')).toBe(true);
   });
+
+  it('unbanPrefix 解封该厂商全部 ref，不影响其他厂商', () => {
+    const b = new CircuitBreaker(3, 60);
+    b.ban('kimi/k3-1m');
+    b.ban('kimi/k3');
+    b.ban('volcengine/glm-5.3');
+    b.unbanPrefix('kimi/');
+    expect(b.canUse('kimi/k3-1m')).toBe(true);
+    expect(b.canUse('kimi/k3')).toBe(true);
+    expect(b.canUse('volcengine/glm-5.3')).toBe(false); // 其他厂商不受影响
+  });
+
+  it('unbanPrefix 只清封禁位，保留熔断冷却状态', () => {
+    vi.useFakeTimers();
+    const b = new CircuitBreaker(1, 60);
+    b.recordFailure('kimi/k3'); // 阈值 1，立即熔断（非 ban）
+    b.ban('kimi/k3-1m');
+    b.unbanPrefix('kimi/');
+    expect(b.canUse('kimi/k3-1m')).toBe(true); // 封禁解除
+    expect(b.canUse('kimi/k3')).toBe(false); // 熔断冷却不受 unbanPrefix 影响
+    vi.advanceTimersByTime(61_000);
+    expect(b.canUse('kimi/k3')).toBe(true); // 冷却结束恢复
+    // 无匹配键时是安全的空操作
+    b.unbanPrefix('bailian/');
+    expect(b.canUse('bailian/glm-5')).toBe(true);
+  });
 });

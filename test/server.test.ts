@@ -17,11 +17,13 @@ providers:
     baseUrl: http://127.0.0.1:1   # 不可达，仅用于错误路径测试
     apiKey: sk-x
     authHeader: bearer
-    contextWindow: 262144
     userAgent: ua
-    modelMap: { "*": m }
-routing: { default: [kimi] }
-compact: { provider: kimi, model: m }
+    models:
+      m: { upstream: m-upstream, contextWindow: 262144 }
+routing:
+  rules:
+    "*": [kimi/m]
+compact: { target: kimi/m }
 storage: { sqlitePath: ${join(dir, 'r.db').replace(/\\/g, '/')}, jsonlDir: ${join(dir, 'logs').replace(/\\/g, '/')} }
 ${extra}
 `,

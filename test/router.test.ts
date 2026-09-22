@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { executeWithFailover, selectChain } from '../src/pipeline/router.js';
+import { executeWithFailover, selectChain, type Candidate } from '../src/pipeline/router.js';
 import { buildSummarizer } from '../src/compact/summarizer.js';
 import { ProviderError, type Provider, type SendResult } from '../src/providers/base.js';
 import { CircuitBreaker, SessionStore } from '../src/session/store.js';
@@ -8,14 +8,15 @@ import type { AnthropicRequest } from '../src/types.js';
 function fakeProvider(name: string, behavior: 'ok' | 'fail500' | 'fail401' | 'text'): Provider {
   return {
     name,
-    contextWindow: 262144,
-    resolveModel: (m) => `${name}-${m}`,
+    resolveModel: (alias) => `${name}-${alias}`,
+    contextWindowFor: () => 262144,
     async send(body: AnthropicRequest): Promise<SendResult> {
       if (behavior === 'fail500') throw new ProviderError(`${name} 500`, 500, true);
       if (behavior === 'fail401') throw new ProviderError(`${name} 401`, 401, false);
+      // v2 契约：send 内部把别名映射为上游名，upstreamModel 为映射结果
       return {
         stream: new Response(`data: {"from":"${name}"}\n\n`).body!,
-        upstreamModel: body.model,
+        upstreamModel: `${name}-${body.model}`,
       };
     },
     async sendSync(body: AnthropicRequest): Promise<string> {
@@ -25,8 +26,13 @@ function fakeProvider(name: string, behavior: 'ok' | 'fail500' | 'fail401' | 'te
   };
 }
 
-const PREPARE = async (p: Provider): Promise<AnthropicRequest> => ({
-  model: p.resolveModel('claude-sonnet-4-6'),
+function cand(name: string, alias: string, behavior: 'ok' | 'fail500' | 'fail401' | 'text' = 'ok'): Candidate {
+  return { provider: fakeProvider(name, behavior), alias, ref: `${name}/${alias}` };
+}
+
+// v2 契约：prepare 内设 body.model = 别名，上游名映射在 Provider 内部完成
+const PREPARE = async (c: Candidate): Promise<AnthropicRequest> => ({
+  model: c.alias,
   max_tokens: 10,
   messages: [{ role: 'user', content: 'hi' }],
 });
@@ -34,57 +40,61 @@ const PREPARE = async (p: Provider): Promise<AnthropicRequest> => ({
 describe('selectChain', () => {
   it('session 粘性优先于配置顺序', () => {
     const sessions = new SessionStore(300);
-    sessions.bind('s1', 'volcengine');
-    const chain = selectChain(['kimi', 'volcengine', 'bailian'], new CircuitBreaker(3, 60), sessions, 's1');
-    expect(chain[0]).toBe('volcengine');
-    expect(chain).toEqual(['volcengine', 'kimi', 'bailian']);
+    sessions.bind('s1', 'volcengine/glm-5.3');
+    const chain = selectChain(
+      ['kimi/k3', 'volcengine/glm-5.3', 'bailian/glm-5'],
+      new CircuitBreaker(3, 60), sessions, 's1',
+    );
+    expect(chain[0]).toBe('volcengine/glm-5.3');
+    expect(chain).toEqual(['volcengine/glm-5.3', 'kimi/k3', 'bailian/glm-5']);
   });
 
-  it('过滤熔断厂商；无 sessionId 时按配置顺序', () => {
+  it('过滤熔断 ref；无 sessionId 时按配置顺序', () => {
     const breaker = new CircuitBreaker(1, 60);
-    breaker.recordFailure('kimi'); // 阈值 1，立即熔断
-    const chain = selectChain(['kimi', 'bailian'], breaker, new SessionStore(300), null);
-    expect(chain).toEqual(['bailian']);
+    breaker.recordFailure('kimi/k3'); // 阈值 1，立即熔断
+    const chain = selectChain(['kimi/k3', 'bailian/glm-5'], breaker, new SessionStore(300), null);
+    expect(chain).toEqual(['bailian/glm-5']);
   });
 });
 
 describe('executeWithFailover', () => {
-  it('第一家成功：不 failover，绑定 session', async () => {
+  it('第一家成功：不 failover，绑定 session 到 ref', async () => {
     const breaker = new CircuitBreaker(3, 60);
     const sessions = new SessionStore(300);
-    const r = await executeWithFailover([fakeProvider('kimi', 'ok')], PREPARE, 5000, breaker, sessions, 's1');
+    const r = await executeWithFailover([cand('kimi', 'k3')], PREPARE, 5000, breaker, sessions, 's1');
     expect(r.failovered).toBe(false);
-    expect(r.provider.name).toBe('kimi');
-    expect(sessions.get('s1')).toBe('kimi');
+    expect(r.candidate.ref).toBe('kimi/k3');
+    expect(r.candidate.provider.name).toBe('kimi');
+    expect(sessions.get('s1')).toBe('kimi/k3');
   });
 
-  it('第一家 500：failover 到第二家，粘性绑定到第二家', async () => {
+  it('第一家 500：failover 到第二家，粘性绑定到第二家 ref', async () => {
     const breaker = new CircuitBreaker(3, 60);
     const sessions = new SessionStore(300);
     const r = await executeWithFailover(
-      [fakeProvider('kimi', 'fail500'), fakeProvider('volcengine', 'ok')],
+      [cand('kimi', 'k3', 'fail500'), cand('volcengine', 'glm-5.3')],
       PREPARE, 5000, breaker, sessions, 's1',
     );
     expect(r.failovered).toBe(true);
-    expect(r.provider.name).toBe('volcengine');
-    expect(sessions.get('s1')).toBe('volcengine');
+    expect(r.candidate.ref).toBe('volcengine/glm-5.3');
+    expect(sessions.get('s1')).toBe('volcengine/glm-5.3');
   });
 
-  it('401 封禁该厂商，后续 selectChain 不再包含它', async () => {
+  it('401 封禁该 ref，后续 selectChain 不再包含它', async () => {
     const breaker = new CircuitBreaker(99, 60); // 高阈值，排除熔断干扰
     const sessions = new SessionStore(300);
     await executeWithFailover(
-      [fakeProvider('kimi', 'fail401'), fakeProvider('volcengine', 'ok')],
+      [cand('kimi', 'k3', 'fail401'), cand('volcengine', 'glm-5.3')],
       PREPARE, 5000, breaker, sessions, null,
     );
-    expect(breaker.canUse('kimi')).toBe(false);
+    expect(breaker.canUse('kimi/k3')).toBe(false);
   });
 
   it('全部失败：抛最后一个错误', async () => {
     const breaker = new CircuitBreaker(99, 60);
     await expect(
       executeWithFailover(
-        [fakeProvider('a', 'fail500'), fakeProvider('b', 'fail500')],
+        [cand('a', 'm1', 'fail500'), cand('b', 'm2', 'fail500')],
         PREPARE, 5000, breaker, new SessionStore(300), null,
       ),
     ).rejects.toMatchObject({ status: 500 });
@@ -93,14 +103,14 @@ describe('executeWithFailover', () => {
   it('prepare 抛错（如压缩失败）同样触发下一家', async () => {
     const breaker = new CircuitBreaker(99, 60);
     const r = await executeWithFailover(
-      [fakeProvider('kimi', 'ok'), fakeProvider('volcengine', 'ok')],
-      async (p) => {
-        if (p.name === 'kimi') throw new Error('压缩模型不可用');
-        return PREPARE(p);
+      [cand('kimi', 'k3'), cand('volcengine', 'glm-5.3')],
+      async (c) => {
+        if (c.provider.name === 'kimi') throw new Error('压缩模型不可用');
+        return PREPARE(c);
       },
       5000, breaker, new SessionStore(300), null,
     );
-    expect(r.provider.name).toBe('volcengine');
+    expect(r.candidate.ref).toBe('volcengine/glm-5.3');
   });
 });
 
@@ -108,20 +118,28 @@ describe('buildSummarizer', () => {
   const config = {
     compact: {
       thresholdRatio: 0.85, targetRatio: 0.7, keepRecentTurns: 6, chunkTokens: 40000,
-      provider: 'kimi', model: 'kimi-small', fallbackToTarget: true,
+      target: 'kimi/small', fallbackToTarget: true,
     },
     failover: { stickyTtlSeconds: 300, failureThreshold: 3, cooldownSeconds: 60, requestTimeoutMs: 5000 },
   } as never;
 
   it('首选压缩模型成功时直接用', async () => {
     const providers = new Map([['kimi', fakeProvider('kimi', 'text')]]);
-    const s = buildSummarizer(config, providers, fakeProvider('bailian', 'text'));
+    const s = buildSummarizer(config, providers, cand('bailian', 'glm-5', 'text'));
     await expect(s('一段历史')).resolves.toContain('kimi摘要');
   });
 
   it('首选失败时兜底目标厂商', async () => {
     const providers = new Map([['kimi', fakeProvider('kimi', 'fail500')]]);
-    const s = buildSummarizer(config, providers, fakeProvider('bailian', 'text'));
+    const s = buildSummarizer(config, providers, cand('bailian', 'glm-5', 'text'));
+    await expect(s('一段历史')).resolves.toContain('bailian摘要');
+  });
+
+  it('compact.target 无法解析时直接用目标厂商兜底', async () => {
+    const cfg = JSON.parse(JSON.stringify(config)) as typeof config;
+    (cfg as { compact: { target: string } }).compact.target = 'no-slash-ref';
+    const providers = new Map([['kimi', fakeProvider('kimi', 'text')]]);
+    const s = buildSummarizer(cfg, providers, cand('bailian', 'glm-5', 'text'));
     await expect(s('一段历史')).resolves.toContain('bailian摘要');
   });
 
@@ -129,7 +147,7 @@ describe('buildSummarizer', () => {
     const cfg = JSON.parse(JSON.stringify(config)) as typeof config;
     (cfg as { compact: { fallbackToTarget: boolean } }).compact.fallbackToTarget = false;
     const providers = new Map([['kimi', fakeProvider('kimi', 'fail500')]]);
-    const s = buildSummarizer(cfg, providers, fakeProvider('bailian', 'text'));
+    const s = buildSummarizer(cfg, providers, cand('bailian', 'glm-5', 'text'));
     await expect(s('一段历史')).rejects.toThrow();
   });
 });

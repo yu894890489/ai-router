@@ -121,8 +121,7 @@ describe('guardContext', () => {
     targetRatio: 0.7,
     keepRecentTurns: 3,
     chunkTokens: 2000,
-    provider: 'kimi',
-    model: 'm',
+    target: 'kimi/m',
     fallbackToTarget: true,
   };
 

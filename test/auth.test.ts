@@ -21,11 +21,13 @@ providers:
     baseUrl: https://api.moonshot.cn/anthropic
     apiKey: sk-x
     authHeader: bearer
-    contextWindow: 262144
     userAgent: ua
-    modelMap: { "*": m }
-routing: { default: [kimi] }
-compact: { provider: kimi, model: m }
+    models:
+      m: { upstream: m-upstream, contextWindow: 262144 }
+routing:
+  rules:
+    "*": [kimi/m]
+compact: { target: kimi/m }
 `;
 
 function makeConfig() {

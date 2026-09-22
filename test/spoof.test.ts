@@ -7,10 +7,9 @@ const CFG: ProviderConfig = {
   baseUrl: 'https://example.com/anthropic',
   apiKey: 'sk-vendor-key',
   authHeader: 'bearer',
-  contextWindow: 262144,
   userAgent: 'claude-cli/2.0.14 (external, cli)',
   extraHeaders: { 'x-custom': 'yes' },
-  modelMap: { '*': 'vendor-model' },
+  models: { main: { upstream: 'vendor-model', contextWindow: 262144 } },
 };
 
 const REQ: AnthropicRequest = {
