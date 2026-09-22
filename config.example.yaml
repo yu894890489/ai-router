@@ -21,8 +21,8 @@ providers:
     authHeader: bearer
     userAgent: claude-cli/2.0.14 (external, cli)
     models:
-      k3-1m:           { upstream: "kimi-k3[1m]", contextWindow: 1000000 }  # 1M 窗口侧，上游名以厂商文档为准
-      k3:              { upstream: kimi-k3, contextWindow: 262144 }
+      k3-1m:           { upstream: k3, contextWindow: 1048576 }              # 1M 版模型 ID 为 k3（1M 上下文需 Allegretto/Pro 及以上会员）
+      k3:              { upstream: k3-256k, contextWindow: 262144 }
       kimi-for-coding: { upstream: kimi-for-coding, contextWindow: 262144 }
 
   # 火山方舟 Coding Plan（模型可换 ark-code-latest 等，对照当前文档）
