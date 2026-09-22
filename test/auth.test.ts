@@ -65,6 +65,7 @@ describe('auth', () => {
   it('未知 Key 抛 AuthError', () => {
     expect(() => resolveProject(makeConfig(), 'sk-nope', REQ)).toThrow(AuthError);
     expect(() => resolveProject(makeConfig(), null, REQ)).toThrow(AuthError);
+    expect(() => resolveProject(makeConfig(), 'constructor', REQ)).toThrow(AuthError);
   });
 
   it('parseCwdFromSystem 支持字符串 system 与 Working directory 写法', () => {

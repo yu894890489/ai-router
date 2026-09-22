@@ -36,7 +36,7 @@ export function resolveProject(
   apiKey: string | null,
   req: AnthropicRequest,
 ): string {
-  if (!apiKey || !(apiKey in config.accessKeys)) {
+  if (!apiKey || !Object.hasOwn(config.accessKeys, apiKey)) {
     throw new AuthError('无效的接入 Key');
   }
   const mapped = config.accessKeys[apiKey];
