@@ -1,0 +1,66 @@
+# ai-router 配置样例。复制为 config.yaml 并填入真实 API Key。
+# 端点已核实（2026-09）：修改模型名前请对照各厂商当前文档。
+
+server:
+  host: 127.0.0.1
+  port: 3456
+
+# 接入 Key -> 项目标签。值为 null 表示用 system prompt 里的工作目录自动推断。
+accessKeys:
+  sk-router-homepage: homepage
+  sk-router-backend: backend-api
+  sk-router-default: null
+
+providers:
+  # 阿里百炼 Coding Plan（1M 窗口侧，模型名加 [1m] 后缀）
+  bailian:
+    baseUrl: https://coding.dashscope.aliyuncs.com/apps/anthropic
+    apiKey: sk-your-dashscope-coding-plan-key
+    authHeader: bearer
+    contextWindow: 1000000
+    userAgent: claude-cli/2.0.14 (external, cli)
+    modelMap:
+      "*": qwen3.7-plus[1m]
+
+  # Kimi / Moonshot（256K 窗口侧）
+  kimi:
+    baseUrl: https://api.moonshot.cn/anthropic
+    apiKey: sk-your-moonshot-key
+    authHeader: bearer
+    contextWindow: 262144
+    userAgent: claude-cli/2.0.14 (external, cli)
+    modelMap:
+      "*": kimi-k2-0905-preview
+
+  # 火山方舟 Coding Plan（256K 窗口侧；模型可换 ark-code-latest / glm-5.3 等）
+  volcengine:
+    baseUrl: https://ark.cn-beijing.volces.com/api/coding
+    apiKey: your-ark-coding-plan-key
+    authHeader: bearer
+    contextWindow: 262144
+    userAgent: claude-cli/2.0.14 (external, cli)
+    modelMap:
+      "*": ark-code-latest
+
+routing:
+  # 1M 在前，256K 在后：failover 时自动触发上下文压缩
+  default: [bailian, kimi, volcengine]
+
+compact:
+  thresholdRatio: 0.85     # 上下文 > 目标窗口 × 此值时触发压缩
+  targetRatio: 0.7         # 压缩后期望降到目标窗口 × 此值
+  keepRecentTurns: 6       # 最近 N 轮原样保留（1 轮 = user + assistant，含工具块）
+  chunkTokens: 40000       # 历史切分块大小
+  provider: kimi           # 压缩总结首选厂商（便宜模型）
+  model: kimi-k2-0905-preview
+  fallbackToTarget: true   # 首选失败时用目标厂商模型兜底
+
+failover:
+  stickyTtlSeconds: 300    # session 粘性 TTL
+  failureThreshold: 3      # 连续失败次数触发熔断
+  cooldownSeconds: 60      # 熔断冷却
+  requestTimeoutMs: 60000  # 单厂商请求超时
+
+storage:
+  sqlitePath: ./data/router.db
+  jsonlDir: ./data/logs
