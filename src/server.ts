@@ -1,6 +1,7 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { watch } from 'node:fs';
+import { registerAdminRoutes } from './admin.js';
 import { buildSummarizer } from './compact/summarizer.js';
 import { loadConfig, parseModelRef, type RouterConfig } from './config.js';
 import { AuthError, extractApiKey, extractSessionId, resolveProject } from './pipeline/auth.js';
@@ -73,6 +74,8 @@ export function createApp(configPath: string): Hono {
   });
 
   const app = new Hono();
+
+  registerAdminRoutes(app, () => state);
 
   app.get('/health', (c) => c.json({ ok: true }));
 
