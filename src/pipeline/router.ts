@@ -48,7 +48,7 @@ export async function executeWithFailover(
   sessions: SessionStore,
   sessionId: string | null,
 ): Promise<FailoverOutcome> {
-  let lastError: unknown = new ProviderError('无可用厂商', 503, false);
+  let lastError: unknown = new ProviderError('无可用目标', 503, false);
 
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i];

@@ -14,7 +14,7 @@ import { createStorage, type LogStorage } from './storage/index.js';
 import { collectStreamToMessage, teeUsage } from './stream.js';
 import type { AnthropicRequest, Usage } from './types.js';
 
-interface AppState {
+export interface AppState {
   config: RouterConfig;
   providers: Map<string, Provider>;
   storage: LogStorage;
@@ -46,18 +46,25 @@ export function diffUnbanTargets(oldCfg: RouterConfig, newCfg: RouterConfig): st
   return targets;
 }
 
+/**
+ * 应用一次配置热重载：apiKey 变化的厂商解除其全部模型 ref 的 401/403 封禁
+ * （熔断计数保留），替换 config 与 providers；breaker/sessions/storage 保留。
+ * 从 watch 回调中抽出以便服务端级测试直接调用。
+ */
+export function applyConfigReload(state: AppState, config: RouterConfig): AppState {
+  for (const name of diffUnbanTargets(state.config, config)) {
+    state.breaker.unbanPrefix(name + '/');
+  }
+  return { ...state, config, providers: createProviders(config) };
+}
+
 export function createApp(configPath: string): Hono {
   let state = buildState(loadConfig(configPath));
 
   // 配置热重载：替换 config 与 providers；breaker/sessions/storage 保留（会话粘性不丢）
   watch(configPath, () => {
     try {
-      const config = loadConfig(configPath);
-      // apiKey 变化的厂商解除其全部模型 ref 的 401/403 封禁（熔断计数保留）
-      for (const name of diffUnbanTargets(state.config, config)) {
-        state.breaker.unbanPrefix(name + '/');
-      }
-      state = { ...state, config, providers: createProviders(config) };
+      state = applyConfigReload(state, loadConfig(configPath));
       console.log('[config] 已热重载');
     } catch (e) {
       console.warn('[config] 热重载失败，沿用旧配置:', e);
@@ -97,7 +104,7 @@ export function createApp(configPath: string): Hono {
 
     try {
       // 3. 场景路由：按客户端模型名查 rules（精确匹配），缺省落 "*" 兜底链
-      const chainRefs = config.routing.rules[body.model] ?? config.routing.rules['*'] ?? [];
+      const chainRefs = config.routing.rules[body.model] ?? config.routing.rules['*'];
       // 4. 链选择（session 粘性 > 配置顺序，过滤熔断/封禁；键均为 ref）
       const selectedRefs = selectChain(chainRefs, breaker, sessions, sessionId);
       // refs → Candidate（loadConfig 已校验 ref 合法，这里防御性跳过异常项）

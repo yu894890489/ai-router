@@ -10,17 +10,22 @@ let enc: Tiktoken | null = null;
 function getEnc(): Tiktoken {
   if (!enc) {
     enc = get_encoding('o200k_base');
-    const cleanup = () => disposeTokenizer();
-    process.once('exit', cleanup);
   }
   return enc;
 }
 
 /** 释放 WASM 内存；仅供进程收尾或测试调用，释放后会重新懒加载。 */
 export function disposeTokenizer(): void {
-  enc?.free();
-  enc = null;
+  // finally 保证 free() 抛错时引用仍被清空，不会残留已释放对象
+  try {
+    enc?.free();
+  } finally {
+    enc = null;
+  }
 }
+
+// exit 处理器全局只注册一次：dispose/重载循环不会累积监听器
+process.once('exit', disposeTokenizer);
 
 function blockText(block: ContentBlock): string {
   if (typeof block.text === 'string') return block.text;

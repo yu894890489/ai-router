@@ -42,13 +42,13 @@ describe('tokenizer', () => {
     expect(countText('你好，世界')).toBe(before);
   });
 
-  it('性能回归：50 万字符 CJK 文本计数 < 5s（WASM，同量级 js-tiktoken 需数十秒）', () => {
+  it('性能回归：50 万字符 CJK 文本计数 < 2s（WASM，同量级 js-tiktoken 需数十秒）', () => {
     const text = '人工智能助手正在处理一段较长的中文上下文，包含标点、数字 12345 和 English 混排。'.repeat(10500);
     expect(text.length).toBeGreaterThanOrEqual(500000);
     const t0 = performance.now();
     const n = countText(text);
     const ms = performance.now() - t0;
     expect(n).toBeGreaterThan(0);
-    expect(ms).toBeLessThan(5000); // 宽松阈值，防 CI 抖动；WASM 实际为毫秒级
+    expect(ms).toBeLessThan(2000); // WASM 实测 ~200ms，仍留 ~10x 余量防 CI 抖动
   });
 });

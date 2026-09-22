@@ -1,5 +1,6 @@
 export class SessionStore {
-  private bindings = new Map<string, { provider: string; expiresAt: number }>();
+  // 值为 ref 字符串（"厂商/别名"），与熔断/粘性键一致
+  private bindings = new Map<string, { ref: string; expiresAt: number }>();
 
   constructor(private ttlSeconds: number) {}
 
@@ -10,12 +11,12 @@ export class SessionStore {
       this.bindings.delete(sessionId);
       return null;
     }
-    return b.provider;
+    return b.ref;
   }
 
-  bind(sessionId: string, provider: string): void {
+  bind(sessionId: string, ref: string): void {
     this.bindings.set(sessionId, {
-      provider,
+      ref,
       expiresAt: Date.now() + this.ttlSeconds * 1000,
     });
   }
