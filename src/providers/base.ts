@@ -20,15 +20,30 @@ export interface SendResult {
 
 export interface Provider {
   readonly name: string;
-  readonly contextWindow: number;
-  resolveModel(clientModel: string): string;
+  /** 别名 → 上游模型名；未知别名抛 ProviderError（retriable: false） */
+  resolveModel(alias: string): string;
+  /** 别名的上下文窗口；未知别名抛 ProviderError（retriable: false） */
+  contextWindowFor(alias: string): number;
+  /** body.model 传别名，内部完成别名→上游名映射；SendResult.upstreamModel 为映射后的上游名 */
   send(body: AnthropicRequest, timeoutMs: number): Promise<SendResult>;
+  /** 同 send，v2 契约：内部同样完成别名→上游名映射，调用方永远传别名 */
   sendSync(body: AnthropicRequest, timeoutMs: number): Promise<string>;
 }
 
 export function createAnthropicProvider(name: string, cfg: ProviderConfig): Provider {
-  function resolveModel(clientModel: string): string {
-    return cfg.modelMap[clientModel] ?? cfg.modelMap['*'] ?? clientModel;
+  function resolveModel(alias: string): string {
+    // Object.hasOwn 防原型链键（constructor 等）被误认为已配置别名
+    if (!Object.hasOwn(cfg.models, alias)) {
+      throw new ProviderError(`厂商 ${name} 未配置模型别名 "${alias}"`, undefined, false);
+    }
+    return cfg.models[alias]!.upstream;
+  }
+
+  function contextWindowFor(alias: string): number {
+    if (!Object.hasOwn(cfg.models, alias)) {
+      throw new ProviderError(`厂商 ${name} 未配置模型别名 "${alias}"`, undefined, false);
+    }
+    return cfg.models[alias]!.contextWindow;
   }
 
   async function post(body: AnthropicRequest, timeoutMs: number): Promise<Response> {
@@ -66,9 +81,10 @@ export function createAnthropicProvider(name: string, cfg: ProviderConfig): Prov
 
   return {
     name,
-    contextWindow: cfg.contextWindow,
 
     resolveModel,
+
+    contextWindowFor,
 
     async send(body: AnthropicRequest, timeoutMs: number): Promise<SendResult> {
       // 本方法返回前抛错 = 可向客户端 failover；返回后流断 = 不可 failover
@@ -84,7 +100,9 @@ export function createAnthropicProvider(name: string, cfg: ProviderConfig): Prov
     },
 
     async sendSync(body: AnthropicRequest, timeoutMs: number): Promise<string> {
-      const res = await post({ ...body, stream: false }, timeoutMs);
+      // v2 契约：与 send 一致，内部完成别名→上游名映射
+      const upstreamModel = resolveModel(body.model);
+      const res = await post({ ...body, model: upstreamModel, stream: false }, timeoutMs);
       const json = (await res.json()) as {
         content?: Array<{ type: string; text?: string }>;
       };

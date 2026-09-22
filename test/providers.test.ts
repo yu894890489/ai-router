@@ -34,25 +34,61 @@ function cfg(baseUrl: string): ProviderConfig {
     baseUrl,
     apiKey: 'sk-test',
     authHeader: 'bearer',
-    contextWindow: 262144,
     userAgent: 'claude-cli/test',
     extraHeaders: {},
-    modelMap: { 'claude-sonnet-4-6': 'vendor-sonnet', '*': 'vendor-default' },
+    models: {
+      'alias-a': { upstream: 'vendor-sonnet', contextWindow: 262144 },
+    },
   };
 }
 
-const BODY = { model: 'claude-sonnet-4-6', max_tokens: 10, messages: [{ role: 'user' as const, content: 'hi' }] };
+// 调用方永远传模型别名；Provider 内部完成 别名 → 上游名 映射
+const BODY = { model: 'alias-a', max_tokens: 10, messages: [{ role: 'user' as const, content: 'hi' }] };
 
 describe('providers/base', () => {
-  it('resolveModel: 精确映射 > * > 原名', async () => {
+  it('resolveModel: 已知别名返回上游模型名', async () => {
     const base = await startMock(() => ({ status: 200, body: '{}' }));
     const p = createAnthropicProvider('t', cfg(base));
-    expect(p.resolveModel('claude-sonnet-4-6')).toBe('vendor-sonnet');
-    expect(p.resolveModel('claude-haiku-4-5')).toBe('vendor-default');
-    expect(createAnthropicProvider('t', { ...cfg(base), modelMap: {} }).resolveModel('x')).toBe('x');
+    expect(p.resolveModel('alias-a')).toBe('vendor-sonnet');
   });
 
-  it('send: 2xx 返回 SSE 流，请求体含 stream:true 与上游模型名', async () => {
+  it('resolveModel: 未知别名抛 ProviderError（retriable=false），点名厂商与别名', async () => {
+    const base = await startMock(() => ({ status: 200, body: '{}' }));
+    const p = createAnthropicProvider('kimi', cfg(base));
+    try {
+      p.resolveModel('no-such-alias');
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(ProviderError);
+      const err = e as ProviderError;
+      expect(err.retriable).toBe(false);
+      expect(err.message).toContain('kimi');
+      expect(err.message).toContain('no-such-alias');
+    }
+  });
+
+  it('contextWindowFor: 已知别名返回上下文窗口', async () => {
+    const base = await startMock(() => ({ status: 200, body: '{}' }));
+    const p = createAnthropicProvider('t', cfg(base));
+    expect(p.contextWindowFor('alias-a')).toBe(262144);
+  });
+
+  it('contextWindowFor: 未知别名抛 ProviderError（retriable=false），点名厂商与别名', async () => {
+    const base = await startMock(() => ({ status: 200, body: '{}' }));
+    const p = createAnthropicProvider('volcengine', cfg(base));
+    try {
+      p.contextWindowFor('no-such-alias');
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(ProviderError);
+      const err = e as ProviderError;
+      expect(err.retriable).toBe(false);
+      expect(err.message).toContain('volcengine');
+      expect(err.message).toContain('no-such-alias');
+    }
+  });
+
+  it('send: 2xx 返回 SSE 流；内部把别名映射为上游名（mock 收到的 model 与 upstreamModel 均为上游名）', async () => {
     let seen = '';
     const base = await startMock((raw) => {
       seen = raw;
@@ -86,13 +122,33 @@ describe('providers/base', () => {
     await expect(p.send(BODY, 100)).rejects.toBeInstanceOf(ProviderError);
   });
 
-  it('sendSync: 聚合 text 块返回字符串', async () => {
-    const base = await startMock(() => ({
-      status: 200,
-      body: JSON.stringify({ content: [{ type: 'text', text: '摘要' }] }),
-    }));
+  it('sendSync: 聚合 text 块返回字符串，且内部同样完成别名→上游名映射', async () => {
+    let seen = '';
+    const base = await startMock((raw) => {
+      seen = raw;
+      return {
+        status: 200,
+        body: JSON.stringify({ content: [{ type: 'text', text: '摘要' }] }),
+      };
+    });
     const p = createAnthropicProvider('x', cfg(base));
     await expect(p.sendSync(BODY, 5000)).resolves.toBe('摘要');
+    const sent = JSON.parse(seen);
+    expect(sent.model).toBe('vendor-sonnet'); // v2 契约：sendSync 也映射别名
+    expect(sent.stream).toBe(false);
+  });
+
+  it('sendSync: 未知别名不发请求直接抛 ProviderError（retriable=false）', async () => {
+    let called = false;
+    const base = await startMock(() => {
+      called = true;
+      return { status: 200, body: '{}' };
+    });
+    const p = createAnthropicProvider('x', cfg(base));
+    await expect(p.sendSync({ ...BODY, model: 'ghost' }, 5000)).rejects.toMatchObject({
+      retriable: false,
+    });
+    expect(called).toBe(false);
   });
 });
 
