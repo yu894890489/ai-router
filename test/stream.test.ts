@@ -47,4 +47,30 @@ describe('collectStreamToMessage', () => {
   it('缺少 message_start 时报错', async () => {
     await expect(collectStreamToMessage(sse([['ping', {}]]))).rejects.toThrow(/message_start/);
   });
+
+  it('聚合 usage 合并 message_delta 的 output_tokens，保留 message_start 的 input_tokens', async () => {
+    const msg = (await collectStreamToMessage(sse(EVENTS))) as {
+      usage: { input_tokens: number; output_tokens: number };
+    };
+    expect(msg.usage.output_tokens).toBe(8); // message_delta 的值，而非 message_start 的 1
+    expect(msg.usage.input_tokens).toBe(120); // message_start 的 input_tokens 必须保留
+  });
+
+  it('聚合 tool_use 块：input_json_delta 累积后 JSON.parse 回对象', async () => {
+    const events: Array<[string, unknown]> = [
+      ['message_start', { type: 'message_start', message: { id: 'msg_2', type: 'message', role: 'assistant', model: 'm', content: [], usage: { input_tokens: 10, output_tokens: 1 } } }],
+      ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_1', name: 'edit_file' } }],
+      ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"path":' } }],
+      ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '"/a.ts"}' } }],
+      ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+      ['message_stop', { type: 'message_stop' }],
+    ];
+    const msg = (await collectStreamToMessage(sse(events))) as unknown as {
+      content: Array<{ type: string; id: string; name: string; input: unknown }>;
+    };
+    expect(msg.content[0].type).toBe('tool_use');
+    expect(msg.content[0].id).toBe('toolu_1');
+    expect(msg.content[0].name).toBe('edit_file');
+    expect(msg.content[0].input).toEqual({ path: '/a.ts' });
+  });
 });
