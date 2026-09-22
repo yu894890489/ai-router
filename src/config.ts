@@ -18,7 +18,8 @@ const configSchema = z.object({
   server: z
     .object({
       host: z.string().default('127.0.0.1'),
-      port: z.number().int().positive().default(3456),
+      // 允许 0：Node listen(0) 表示随机空闲端口（测试/临时实例用）
+      port: z.number().int().min(0).default(3456),
     })
     .default({ host: '127.0.0.1', port: 3456 }),
   accessKeys: z.record(z.string(), z.string().nullable()),
