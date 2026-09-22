@@ -97,6 +97,8 @@ export function createApp(configPath: string): Hono {
       const { result, provider, failovered } = await executeWithFailover(
         candidates,
         async (p) => {
+          // 每次尝试开头重置，避免前一厂商的压缩结果残留到未触发压缩的厂商
+          compactInfo = null;
           const summarizer = buildSummarizer(config, providers, p);
           const guarded = await guardContext(body, p.contextWindow, config.compact, summarizer);
           if (guarded.compacted) {
