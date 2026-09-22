@@ -194,8 +194,35 @@ describe('集成：项目归属兜底', () => {
   });
 });
 
-describe('集成：failover 后 compactInfo 不残留', () => {
-  it('p1 压缩成功但发送失败，failover 到不压缩的 p2 后日志 compacted=0', async () => {
+describe('集成：非流式聚合响应', () => {
+  it('stream:false 返回聚合 JSON 而非 SSE，usage 落库', async () => {
+    const { app, dbPath, p1 } = await setup({ p1: 'ok' });
+    const res = await post(app, 'sk-proj-a', { ...CHAT, stream: false });
+    expect(res.status).toBe(200);
+    // ① 聚合 JSON：不是 SSE
+    expect(res.headers.get('content-type') ?? '').not.toContain('event-stream');
+    const body = (await res.json()) as {
+      role: string;
+      content: Array<{ type: string; text?: string }>;
+    };
+    expect(body.role).toBe('assistant');
+    expect(Array.isArray(body.content)).toBe(true);
+    expect(body.content[0].type).toBe('text');
+    expect(body.content[0].text).toContain('来自mock的回答');
+    // 上游仍按 stream:true 请求（路由内部始终走流式再聚合）
+    expect(p1.lastRequest()!.stream).toBe(true);
+    // ② 等落库：usage 来自 mock SSE 的 message_start(input=42) + message_delta(output=7)
+    await new Promise((r) => setTimeout(r, 200));
+    const db = new DatabaseSync(dbPath);
+    const row = db.prepare('SELECT * FROM requests ORDER BY created_at DESC LIMIT 1').get() as Record<string, unknown>;
+    expect(row.status).toBe('success');
+    expect(row.input_tokens).toBe(42);
+    expect(row.output_tokens).toBe(7);
+    db.close();
+  });
+});
+
+describe('集成：failover 后 compactInfo 不残留', () => {  it('p1 压缩成功但发送失败，failover 到不压缩的 p2 后日志 compacted=0', async () => {
     const { app, dbPath, p1, p2 } = await setup({ p1: 'fail500', contextWindow: 100, p2ContextWindow: 262144 });
     const messages = [];
     for (let i = 0; i < 6; i++) {

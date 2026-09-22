@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createApp } from '../src/server.js';
+import { createApp, diffUnbanTargets } from '../src/server.js';
+import type { RouterConfig } from '../src/config.js';
 
 function writeConfig(dir: string, extra = ''): string {
   const p = join(dir, 'config.yaml');
@@ -68,5 +69,27 @@ describe('server', () => {
     expect(res.status).toBeGreaterThanOrEqual(500);
     const body = (await res.json()) as { error: { type: string } };
     expect(body.error.type).toBe('overloaded_error');
+  });
+});
+
+describe('diffUnbanTargets', () => {
+  function cfgWith(apiKeys: Record<string, string>): RouterConfig {
+    const providers: Record<string, unknown> = {};
+    for (const [name, apiKey] of Object.entries(apiKeys)) {
+      providers[name] = { apiKey };
+    }
+    return { providers } as unknown as RouterConfig;
+  }
+
+  it('apiKey 变化的厂商被列入 unban 目标', () => {
+    const oldCfg = cfgWith({ kimi: 'sk-old', volc: 'sk-v1' });
+    const newCfg = cfgWith({ kimi: 'sk-new', volc: 'sk-v1' });
+    expect(diffUnbanTargets(oldCfg, newCfg)).toEqual(['kimi']);
+  });
+
+  it('apiKey 未变化、新增/删除厂商均不触发 unban', () => {
+    const oldCfg = cfgWith({ kimi: 'sk-x', removed: 'sk-r' });
+    const newCfg = cfgWith({ kimi: 'sk-x', added: 'sk-a' });
+    expect(diffUnbanTargets(oldCfg, newCfg)).toEqual([]);
   });
 });

@@ -74,6 +74,32 @@ describe('compactMessages', () => {
     expect(String(tail[1].content)).toContain('回答19');
   });
 
+  it('历史内容中的 $& / $1 等替换模式原样传给 summarizer', async () => {
+    const received: string[] = [];
+    const history: Message[] = [];
+    for (let i = 0; i < 10; i++) {
+      history.push(
+        { role: 'user', content: `q${i} ${'字'.repeat(100)}` },
+        { role: 'assistant', content: `a${i}` },
+      );
+    }
+    // 被压缩的中段包含 $ 替换模式；若 replace 用字符串替换，$& 会变成 '%s' 前缀内容、$1 变空
+    history[2] = { role: 'user', content: '正则细节 $& 与 $1 必须原样保留' };
+    await compactMessages(history, {
+      keepRecentTurns: 2,
+      targetTokens: 1,
+      chunkTokens: 2000,
+      summarizer: async (text) => {
+        received.push(text);
+        return '摘要';
+      },
+      count: countMessages,
+    });
+    const joined = received.join('\n');
+    expect(joined).toContain('$&');
+    expect(joined).toContain('$1');
+  });
+
   it('summarizer 抛错时向上传播（不静默丢上下文）', async () => {
     await expect(
       compactMessages(bigHistory, {

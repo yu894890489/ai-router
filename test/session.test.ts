@@ -50,4 +50,22 @@ describe('CircuitBreaker', () => {
     vi.advanceTimersByTime(3600_000);
     expect(b.canUse('kimi')).toBe(false);
   });
+
+  it('unban 解除封禁但保留熔断计数', () => {
+    vi.useFakeTimers();
+    const b = new CircuitBreaker(3, 60);
+    b.ban('kimi');
+    expect(b.canUse('kimi')).toBe(false);
+    b.unban('kimi');
+    expect(b.canUse('kimi')).toBe(true);
+    // 熔断计数保留：unban 前的失败记录不清零
+    b.recordFailure('kimi');
+    b.recordFailure('kimi');
+    expect(b.canUse('kimi')).toBe(true); // 2 < 3，未熔断
+    b.recordFailure('kimi');
+    expect(b.canUse('kimi')).toBe(false); // 达阈值熔断（与 ban 无关）
+    // 未 ban 的厂商 unban 是安全的空操作
+    b.unban('other');
+    expect(b.canUse('other')).toBe(true);
+  });
 });

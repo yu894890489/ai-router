@@ -36,6 +36,16 @@ function buildState(config: RouterConfig): AppState {
   };
 }
 
+// 热重载时对比新旧配置：apiKey 发生变化的厂商需要解除 401/403 封禁
+export function diffUnbanTargets(oldCfg: RouterConfig, newCfg: RouterConfig): string[] {
+  const targets: string[] = [];
+  for (const [name, p] of Object.entries(newCfg.providers)) {
+    const old = oldCfg.providers[name];
+    if (old && old.apiKey !== p.apiKey) targets.push(name);
+  }
+  return targets;
+}
+
 export function createApp(configPath: string): Hono {
   let state = buildState(loadConfig(configPath));
 
@@ -43,6 +53,10 @@ export function createApp(configPath: string): Hono {
   watch(configPath, () => {
     try {
       const config = loadConfig(configPath);
+      // apiKey 变化的厂商解除 401/403 封禁（熔断计数保留）
+      for (const name of diffUnbanTargets(state.config, config)) {
+        state.breaker.unban(name);
+      }
       state = { ...state, config, providers: createProviders(config) };
       console.log('[config] 已热重载');
     } catch (e) {

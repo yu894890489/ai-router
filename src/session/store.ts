@@ -68,6 +68,13 @@ export class CircuitBreaker {
 
   ban(name: string): void {
     this.state(name).banned = true;
-    console.warn(`[failover] 厂商 ${name} 鉴权失败（401/403），已标记不可用直至重启`);
+    console.warn(`[failover] 厂商 ${name} 鉴权失败（401/403），已标记不可用直至重启或配置更换 apiKey`);
+  }
+
+  unban(name: string): void {
+    const s = this.states.get(name);
+    if (!s || !s.banned) return;
+    s.banned = false; // 只清封禁位，保留熔断计数与冷却状态
+    console.warn(`[failover] 厂商 ${name} 已解除封禁（apiKey 已更新）`);
   }
 }

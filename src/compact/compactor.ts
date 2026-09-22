@@ -95,7 +95,8 @@ export async function compactMessages(
     // 逐块总结；summarizer 抛错时向上传播（禁止静默丢上下文）
     const summaries: string[] = [];
     for (const chunk of chunks) {
-      summaries.push(await opts.summarizer(SUMMARY_PROMPT.replace('%s', chunk)));
+      // 函数式替换：chunk 中的 $&、$1 等不被解释为替换模式，原样进入提示词
+      summaries.push(await opts.summarizer(SUMMARY_PROMPT.replace('%s', () => chunk)));
     }
 
     const summaryText = `<context-summary>\n以下是此前 ${turns.length - keepTurns} 轮对话的压缩摘要（原消息已移除）：\n\n${summaries.join('\n\n---\n\n')}\n</context-summary>`;
