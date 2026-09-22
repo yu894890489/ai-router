@@ -67,6 +67,8 @@ describe('storage', () => {
   it('sanitizeProject 清洗非法文件名字符', () => {
     expect(sanitizeProject('D:\\code\\my app')).toBe('D__code_my_app');
     expect(sanitizeProject('')).toBe('_default');
+    expect(sanitizeProject('..')).toBe('_default');
+    expect(sanitizeProject('.')).toBe('_default');
   });
 
   it('jsonl 目录不可写时降级为 warn，不抛出', () => {

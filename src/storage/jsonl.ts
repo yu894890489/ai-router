@@ -3,7 +3,8 @@ import { join } from 'node:path';
 
 export function sanitizeProject(p: string): string {
   const cleaned = p.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
-  return cleaned.length > 0 ? cleaned : '_default';
+  if (cleaned.length === 0 || cleaned === '.' || cleaned === '..') return '_default';
+  return cleaned;
 }
 
 export type JsonlWriter = (
