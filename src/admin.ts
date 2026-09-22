@@ -26,7 +26,7 @@ export function registerAdminRoutes(app: Hono, getState: () => AppState): void {
   app.get('/admin/api/sessions', (c) => {
     const { storage, sessions } = getState();
     const raw = Number(c.req.query('limit'));
-    const limit = Math.min(Math.max(Number.isFinite(raw) && raw > 0 ? raw : 5, 1), 50);
+    const limit = Math.min(Math.max(Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 5, 1), 50);
     const list = storage.sessions.listRecent(limit).map((s) => ({
       ...s,
       currentRef: s.overrideRef ?? sessions.get(s.sessionId) ?? null,
@@ -50,7 +50,12 @@ export function registerAdminRoutes(app: Hono, getState: () => AppState): void {
   app.post('/admin/api/sessions/:id/model', async (c) => {
     const { config, storage, sessions } = getState();
     const sessionId = c.req.param('id');
-    const body = (await c.req.json()) as { ref?: string | null };
+    let body: { ref?: string | null };
+    try {
+      body = (await c.req.json()) as { ref?: string | null };
+    } catch {
+      return c.json({ error: '请求体非法' }, 400);
+    }
     const ref = body.ref ?? null;
 
     if (!storage.sessions.getSession(sessionId)) {

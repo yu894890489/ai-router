@@ -45,7 +45,7 @@ export const ADMIN_HTML = `<!doctype html>
 </table>
 <script>
 let KEY = localStorage.getItem('ai-router-key') || '';
-let MODELS = [], THRESH = 0.85;
+let MODELS = [], THRESH = 0.85, timer = null;
 
 function fmtTs(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; }
 function fmtWindow(n) { return n >= 1000000 ? (n / 1048576).toFixed(0) + 'M' : Math.round(n / 1024) + 'K'; }
@@ -57,6 +57,7 @@ async function api(path, opts) {
 }
 
 function showKey(msg) {
+  if (timer) { clearInterval(timer); timer = null; }
   document.getElementById('keybox').style.display = 'block';
   document.getElementById('tbl').style.display = 'none';
   document.getElementById('err').textContent = msg || '';
@@ -76,7 +77,68 @@ async function switchModel(sid, ref) {
   load();
 }
 
+function cell(cls, text) {
+  const td = document.createElement('td');
+  if (cls) td.className = cls;
+  td.textContent = text;
+  return td;
+}
+
+function buildRow(it) {
+  const tr = document.createElement('tr');
+
+  const tdSession = document.createElement('td');
+  const titleDiv = document.createElement('div');
+  titleDiv.className = 'title';
+  titleDiv.title = it.title || '';
+  titleDiv.textContent = it.title || '（无标题）';
+  const sidDiv = document.createElement('div');
+  sidDiv.className = 'sid';
+  sidDiv.textContent = it.sessionId;
+  tdSession.append(titleDiv, sidDiv);
+  tr.appendChild(tdSession);
+
+  tr.appendChild(cell('', it.project));
+
+  const tdCur = document.createElement('td');
+  tdCur.className = 'cur';
+  const curSpan = document.createElement('span');
+  if (it.currentRef) { curSpan.className = 'tag'; curSpan.textContent = it.currentRef; }
+  else { curSpan.className = 'muted'; curSpan.textContent = '跟随规则'; }
+  tdCur.appendChild(curSpan);
+  tr.appendChild(tdCur);
+
+  tr.appendChild(cell('', it.lastTokens.toLocaleString()));
+  tr.appendChild(cell('muted', fmtTs(it.lastSeen)));
+
+  const tdSwitch = document.createElement('td');
+  const select = document.createElement('select');
+  select.dataset.sid = it.sessionId;
+  const optFollow = document.createElement('option');
+  optFollow.value = '';
+  optFollow.textContent = '跟随规则';
+  select.appendChild(optFollow);
+  for (const mo of MODELS) {
+    const opt = document.createElement('option');
+    opt.value = mo.ref;
+    opt.textContent = mo.ref + ' · ' + fmtWindow(mo.contextWindow) +
+      (it.lastTokens > mo.contextWindow * THRESH ? ' ⚠️' : '');
+    if (it.overrideRef === mo.ref) opt.selected = true;
+    select.appendChild(opt);
+  }
+  select.addEventListener('change', function () { switchModel(this.dataset.sid, this.value); });
+  const warn = document.createElement('span');
+  warn.className = 'warn';
+  warn.title = '带 ⚠️ 的选项：该会话 token 量超过目标窗口触发线，切换后将自动压缩历史';
+  warn.textContent = '?';
+  tdSwitch.append(select, document.createTextNode(' '), warn);
+  tr.appendChild(tdSwitch);
+
+  return tr;
+}
+
 async function load() {
+  if (!KEY) { showKey(''); return; }
   try {
     const m = await api('/admin/api/models');
     MODELS = m.models; THRESH = m.thresholdRatio;
@@ -86,34 +148,15 @@ async function load() {
     document.getElementById('now').textContent = fmtTs(new Date().toISOString());
     const rows = document.getElementById('rows');
     rows.innerHTML = '';
-    for (const it of s.sessions) {
-      const tr = document.createElement('tr');
-      const opts = ['<option value="">跟随规则</option>'].concat(MODELS.map(function (mo) {
-        const sel = it.overrideRef === mo.ref ? ' selected' : '';
-        const warn = it.lastTokens > mo.contextWindow * THRESH ? ' ⚠️' : '';
-        return '<option value="' + mo.ref + '"' + sel + '>' + mo.ref + ' · ' + fmtWindow(mo.contextWindow) + warn + '</option>';
-      })).join('');
-      const cur = it.currentRef ? '<span class="tag">' + it.currentRef + '</span>' : '<span class="muted">跟随规则</span>';
-      tr.innerHTML =
-        '<td><div class="title" title="' + (it.title || '').replace(/"/g, '&quot;') + '">' + (it.title || '（无标题）') + '</div>' +
-        '<div class="sid">' + it.sessionId + '</div></td>' +
-        '<td>' + it.project + '</td>' +
-        '<td class="cur">' + cur + '</td>' +
-        '<td>' + it.lastTokens.toLocaleString() + '</td>' +
-        '<td class="muted">' + fmtTs(it.lastSeen) + '</td>' +
-        '<td><select onchange="switchModel(\\'' + it.sessionId + '\\', this.value)">' + opts + '</select> ' +
-        '<span class="warn" title="带 ⚠️ 的选项：该会话 token 量超过目标窗口触发线，切换后将自动压缩历史">?</span></td>';
-      rows.appendChild(tr);
-    }
+    for (const it of s.sessions) rows.appendChild(buildRow(it));
     if (s.sessions.length === 0) {
       rows.innerHTML = '<tr><td colspan="6" class="muted">还没有会话记录。用 Claude Code 发一条消息后再来。</td></tr>';
     }
+    if (!timer) timer = setInterval(load, 15000); // 登录成功后才轮询
   } catch (e) { /* 401 已处理 */ }
 }
 
-document.getElementById('now').textContent = fmtTs(new Date().toISOString());
 if (!KEY) showKey(''); else load();
-setInterval(load, 15000);
 </script>
 </body>
 </html>`;
