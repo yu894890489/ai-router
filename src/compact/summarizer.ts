@@ -33,7 +33,8 @@ export function buildSummarizer(
     ? make(target.provider, target.alias)
     : null;
 
-  // 单次压缩内首选失败一次即降级：后续分块直接走兜底，不再逐块等超时
+  // 单次压缩内首选失败一次即降级：后续分块直接走兜底，不再逐块等超时。
+  // 近似语义：并发下至多 concurrency-1 个已在飞的首选调用仍会踩满超时
   let primaryDown = false;
   return async (text: string): Promise<string> => {
     if (primaryFn && !primaryDown) {

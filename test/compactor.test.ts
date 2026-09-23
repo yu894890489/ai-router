@@ -136,15 +136,15 @@ describe('compactMessages', () => {
     expect(res.compacted).toBe(true);
     expect(peak).toBe(2); // 确实发生了并行，且没超并发上限
     const summary = String(res.messages[0].content);
-    const idx0 = summary.indexOf('摘要0');
-    // 多块时摘要必须按原始轮次顺序拼接（并行完成顺序乱不影响结果）
-    const laterIdx = summary.search(/摘要[1-9]/);
-    expect(idx0).toBeGreaterThanOrEqual(0);
-    expect(laterIdx).toBeGreaterThan(idx0);
+    // 全部「摘要N」按出现位置的编号必须单调递增（并行完成顺序乱不影响拼接顺序）
+    const order = [...summary.matchAll(/摘要(\d+)/g)].map((m) => Number(m[1]));
+    expect(order.length).toBeGreaterThan(1);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
 
   it('并行中某块失败：错误向上传播，不产出残缺摘要', async () => {
     let n = 0;
+    let started = 0;
     await expect(
       compactMessages(bigHistory, {
         keepRecentTurns: 4,
@@ -153,6 +153,7 @@ describe('compactMessages', () => {
         concurrency: 2,
         summarizer: async () => {
           n++;
+          started = n;
           await new Promise((r) => setTimeout(r, 5));
           if (n === 2) throw new Error('第二块超时');
           return '摘要';
@@ -160,6 +161,22 @@ describe('compactMessages', () => {
         count: countMessages,
       }),
     ).rejects.toThrow('第二块超时');
+    // 首错后不再领取新任务：调用数不超过出错时已启动的任务数
+    expect(n).toBeLessThanOrEqual(started);
+    expect(n).toBeLessThanOrEqual(2 + 1); // 并发 2：至多 1 个在飞任务收尾
+  });
+
+  it('mapPool 非法并发度直接抛错，不静默返回空结果', async () => {
+    await expect(
+      compactMessages(bigHistory, {
+        keepRecentTurns: 4,
+        targetTokens: 1,
+        chunkTokens: 2000,
+        concurrency: 0,
+        summarizer: async () => '摘要',
+        count: countMessages,
+      }),
+    ).rejects.toThrow('非法并发度');
   });
 });
 

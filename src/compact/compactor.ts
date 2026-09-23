@@ -68,6 +68,9 @@ async function mapPool<T, R>(
   concurrency: number,
   fn: (item: T) => Promise<R>,
 ): Promise<R[]> {
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new Error(`mapPool: 非法并发度 ${concurrency}`);
+  }
   const results = new Array<R>(items.length);
   let idx = 0;
   let firstErr: unknown = null;
