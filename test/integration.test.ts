@@ -163,6 +163,20 @@ describe('集成：上游 SSE error 事件', () => {
     expect(row.provider).toBe('p1');
     db.close();
   });
+
+  it('非流式客户端遇流中 error 事件：返回 503 与上游原文，日志记 error', async () => {
+    const { app, dbPath } = await setup({ p1: 'sseError' });
+    const res = await post(app, 'sk-proj-a', { ...CHAT, stream: false });
+    expect(res.status).toBe(503); // 残缺聚合不返回给客户端
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toBe('The service encountered an unexpected internal error');
+    await new Promise((r) => setTimeout(r, 200));
+    const db = new DatabaseSync(dbPath);
+    const row = db.prepare('SELECT * FROM requests ORDER BY created_at DESC LIMIT 1').get() as Record<string, unknown>;
+    expect(row.status).toBe('error');
+    expect(row.error).toBe('The service encountered an unexpected internal error');
+    db.close();
+  });
 });
 
 describe('集成：failover', () => {

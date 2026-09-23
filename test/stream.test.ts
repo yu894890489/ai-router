@@ -52,6 +52,24 @@ describe('teeUsage', () => {
     const { streamError } = teeUsage(sse([['error', { type: 'error' }]]));
     await expect(streamError).resolves.toBe('上游返回了未携带详情的错误事件');
   });
+
+  it('客户端中途断连：streamError 为 null，不误记为上游错误', async () => {
+    const enc = new TextEncoder();
+    const chunk = enc.encode(
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"x"}}\n\n',
+    );
+    // 持续产出的上游流：模拟长生成中用户按 Esc
+    const upstream = new ReadableStream<Uint8Array>({
+      pull(c) {
+        c.enqueue(chunk);
+      },
+    });
+    const { clientStream, streamError } = teeUsage(upstream);
+    const r = clientStream.getReader();
+    await r.read();
+    await r.cancel(); // 客户端断连
+    await expect(streamError).resolves.toBeNull();
+  });
 });
 
 describe('collectStreamToMessage', () => {
@@ -77,6 +95,27 @@ describe('collectStreamToMessage', () => {
     await expect(collectStreamToMessage(sse(events))).rejects.toThrow(
       'The service encountered an unexpected internal error',
     );
+  });
+
+  it('部分聚合后被 error 事件打断（无 message_stop）：抛上游原文，不返回残缺 message', async () => {
+    const events: Array<[string, unknown]> = [
+      ['message_start', { type: 'message_start', message: { id: 'msg_p', type: 'message', role: 'assistant', model: 'm', content: [], usage: { input_tokens: 42, output_tokens: 1 } } }],
+      ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }],
+      ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '半截回答' } }],
+      ['error', { type: 'error', error: { type: 'overloaded_error', message: 'The service encountered an unexpected internal error' } }],
+    ];
+    await expect(collectStreamToMessage(sse(events))).rejects.toThrow(
+      'The service encountered an unexpected internal error',
+    );
+  });
+
+  it('完整响应（有 message_stop）后尾部 error 事件不影响聚合结果', async () => {
+    const events: Array<[string, unknown]> = [
+      ...EVENTS,
+      ['error', { type: 'error', error: { type: 'overloaded_error', message: 'late noise' } }],
+    ];
+    const msg = (await collectStreamToMessage(sse(events))) as { content: Array<{ text: string }> };
+    expect(msg.content[0].text).toBe('你好，世界');
   });
 
   it('聚合 usage 合并 message_delta 的 output_tokens，保留 message_start 的 input_tokens', async () => {

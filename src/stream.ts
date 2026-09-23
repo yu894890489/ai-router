@@ -45,9 +45,15 @@ export function teeUsage(stream: ReadableStream<Uint8Array>): {
   // 背压会阻止 transform/flush 执行，usage 永远不会 resolve。
   // 这里用后台泵主动读取上游：字节原样透传 + 旁路解析，源结束即 resolve usage。
   let clientController!: ReadableStreamDefaultController<Uint8Array>;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let clientAborted = false; // 客户端主动断连（Esc 中断等）：中立收尾，不误记为上游错误
   const clientStream = new ReadableStream<Uint8Array>({
     start(controller) {
       clientController = controller;
+    },
+    cancel() {
+      clientAborted = true;
+      reader?.cancel().catch(() => {}); // 客户端不看了，顺带停掉上游读取
     },
   });
 
@@ -76,7 +82,7 @@ export function teeUsage(stream: ReadableStream<Uint8Array>): {
   };
 
   void (async () => {
-    const reader = stream.getReader();
+    reader = stream.getReader();
     try {
       for (;;) {
         const { done, value } = await reader.read();
@@ -84,15 +90,17 @@ export function teeUsage(stream: ReadableStream<Uint8Array>): {
         clientController.enqueue(value); // 字节原样透传
         handleChunk(value);
       }
-      clientController.close();
+      if (!clientAborted) clientController.close();
       resolveUsage(saw ? { input_tokens: input, output_tokens: output } : null);
       resolveText(reply);
-      resolveStreamError(firstError);
+      resolveStreamError(clientAborted ? null : firstError);
     } catch (err) {
-      clientController.error(err);
+      if (!clientAborted) clientController.error(err);
       resolveUsage(saw ? { input_tokens: input, output_tokens: output } : null);
       resolveText(reply);
-      resolveStreamError(firstError ?? `上游流读取异常: ${String(err)}`);
+      resolveStreamError(
+        clientAborted ? null : (firstError ?? `上游流读取异常: ${String(err)}`),
+      );
     }
   })();
 
@@ -121,6 +129,7 @@ export async function collectStreamToMessage(
   let message: AggregateMessage | null = null;
   const blocks: AggregateBlock[] = [];
   let firstError: string | null = null; // 上游 SSE error 事件的原文
+  let sawStop = false; // 见到 message_stop 才算完整响应
 
   for (;;) {
     const { done, value } = await reader.read();
@@ -130,6 +139,8 @@ export async function collectStreamToMessage(
       if (json.type === 'error' && firstError === null) {
         const e = json.error as { message?: string } | undefined;
         firstError = e?.message ?? '上游返回了未携带详情的错误事件';
+      } else if (json.type === 'message_stop') {
+        sawStop = true;
       } else if (json.type === 'message_start') {
         message = { ...(json.message as AggregateMessage), content: [] };
       } else if (json.type === 'content_block_start') {
@@ -165,6 +176,8 @@ export async function collectStreamToMessage(
   }
 
   if (!message) throw new Error(firstError ?? '上游流中未找到 message_start');
+  // 部分聚合后被 error 事件打断：不能让 7a 拿残缺 message 记 success
+  if (firstError && !sawStop) throw new Error(firstError);
   const content: Array<Record<string, unknown>> = blocks.filter(Boolean).map((b) => {
     if (b.type === 'tool_use' && typeof b.input === 'string') {
       let input: unknown = b.input;
