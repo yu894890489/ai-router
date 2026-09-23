@@ -207,7 +207,12 @@ export function createApp(configPath: string): Hono {
           .filter((b) => b.type === 'text')
           .map((b) => (b.text as string) ?? '')
           .join('\n');
-        recordTurn(assistantText);
+        try {
+          recordTurn(assistantText);
+        } catch (e) {
+          // 轮次记录失败不阻断响应日志收尾，否则 requests 表永久 pending
+          console.error('[turns] 轮次记录失败:', e);
+        }
         storage.writeBody(logId, 'response', message);
         storage.finish(logId, {
           ...baseLog,
@@ -223,7 +228,12 @@ export function createApp(configPath: string): Hono {
       const { clientStream, usage, text } = teeUsage(result.stream);
       void Promise.all([usage, text])
         .then(([u, assistantText]) => {
-          recordTurn(assistantText ?? '');
+          try {
+            recordTurn(assistantText ?? '');
+          } catch (e) {
+            // 轮次记录失败不阻断 writeBody/finish，否则 requests 表永久 pending
+            console.error('[turns] 轮次记录失败:', e);
+          }
           storage.writeBody(logId, 'response', { streamed: true, usage: u });
           storage.finish(logId, {
             ...baseLog,
@@ -249,7 +259,12 @@ export function createApp(configPath: string): Hono {
       const type = status === 401 || status === 403 ? 'authentication_error' : 'overloaded_error';
       const message = e instanceof Error ? e.message : String(e);
       touchSession();
-      recordTurn('');
+      try {
+        recordTurn('');
+      } catch (e2) {
+        // 错误路径也要保证 finish 落库
+        console.error('[turns] 轮次记录失败:', e2);
+      }
       storage.finish(logId, {
         status: 'error',
         error: message,

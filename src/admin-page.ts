@@ -179,9 +179,9 @@ async function load() {
     const s = await api('/admin/api/sessions?limit=5');
     document.getElementById('keybox').style.display = 'none';
     document.getElementById('now').textContent = fmtTs(new Date().toISOString());
-    if (VIEW !== 'list') return; // 聊天/搜索视图不被轮询打断，也不显示会话表格
+    document.getElementById('searchbar').style.display = 'block'; // 搜索框所有视图可见（设计 §5）
+    if (VIEW !== 'list') return; // 聊天/搜索视图不被轮询打断；tbl 仅 list 视图显示
     document.getElementById('tbl').style.display = 'table';
-    document.getElementById('searchbar').style.display = 'block';
     const rows = document.getElementById('rows');
     rows.innerHTML='';
     for (const it of s.sessions) rows.appendChild(buildRow(it));
@@ -199,7 +199,7 @@ function showView(name) {
   document.getElementById('results').style.display = name === 'results' ? 'block' : 'none';
 }
 
-async function openChat(sid, title) {
+async function openChat(sid, title, seq) {
   location.hash = '#chat=' + encodeURIComponent(sid);
   showView('chat');
   const box = document.getElementById('chat');
@@ -224,6 +224,14 @@ async function openChat(sid, title) {
     return;
   }
   for (const t of data.turns) box.appendChild(buildTurn(t));
+  // 搜索结果跳转：高亮目标轮次并滚动到位（设计 §5）
+  if (seq != null) {
+    const el = box.querySelector('[data-seq="' + seq + '"]');
+    if (el) {
+      el.classList.add('hl');
+      el.scrollIntoView();
+    }
+  }
 }
 
 function buildTurn(t) {
@@ -301,7 +309,7 @@ async function doSearch() {
     ts.className = 'tmeta';
     ts.textContent = fmtTs(hit.createdAt);
     div.append(title, snip, ts);
-    div.addEventListener('click', () => openChat(hit.sessionId, hit.sessionTitle || hit.sessionId));
+    div.addEventListener('click', () => openChat(hit.sessionId, hit.sessionTitle || hit.sessionId, hit.seq));
     box.appendChild(div);
   }
 }
