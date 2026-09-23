@@ -38,6 +38,8 @@ const configSchema = z.object({
     chunkTokens: z.number().int().positive().default(40000),
     target: z.string().min(1),
     fallbackToTarget: z.boolean().default(true),
+    timeoutMs: z.number().int().positive().default(180000), // 总结专用，独立于转发超时（40k token 非流式总结 60s 不够）
+    concurrency: z.number().int().min(1).max(8).default(2), // 分块总结并行度
   }),
   failover: z
     .object({

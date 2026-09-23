@@ -60,6 +60,8 @@ describe('loadConfig', () => {
     expect(cfg.compact.targetRatio).toBe(0.7);
     expect(cfg.compact.keepRecentTurns).toBe(6);
     expect(cfg.compact.fallbackToTarget).toBe(true);
+    expect(cfg.compact.timeoutMs).toBe(180000); // 压缩总结独立超时，默认 3 分钟
+    expect(cfg.compact.concurrency).toBe(2); // 分块总结默认 2 路并行
     expect(cfg.failover.stickyTtlSeconds).toBe(300);
     expect(cfg.providers.kimi.models['k3-1m'].contextWindow).toBe(1000000);
     expect(cfg.providers.kimi.models['k3-1m'].upstream).toBe('kimi-k3[1m]');

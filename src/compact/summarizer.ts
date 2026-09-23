@@ -8,7 +8,7 @@ export function buildSummarizer(
   providers: Map<string, Provider>,
   target: Candidate,
 ): Summarizer {
-  const timeout = config.failover.requestTimeoutMs;
+  const timeout = config.compact.timeoutMs;
   // sendSync 传别名，别名→上游名映射在 Provider 内部完成
   const make =
     (p: Provider, alias: string): Summarizer =>
@@ -33,13 +33,16 @@ export function buildSummarizer(
     ? make(target.provider, target.alias)
     : null;
 
+  // 单次压缩内首选失败一次即降级：后续分块直接走兜底，不再逐块等超时
+  let primaryDown = false;
   return async (text: string): Promise<string> => {
-    if (primaryFn) {
+    if (primaryFn && !primaryDown) {
       try {
         return await primaryFn(text);
       } catch (e) {
         if (!fallbackFn) throw e;
-        console.warn('[compact] 首选压缩模型失败，切换目标厂商兜底:', e);
+        primaryDown = true;
+        console.warn('[compact] 首选压缩模型失败，本次压缩剩余分块改用目标厂商兜底:', e);
       }
     }
     if (fallbackFn) return fallbackFn(text);

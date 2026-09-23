@@ -8,6 +8,8 @@ export interface CompactOptions {
   chunkTokens: number;
   summarizer: Summarizer;
   count: (messages: Message[]) => number;
+  /** 分块总结并行度，默认 1（串行） */
+  concurrency?: number;
 }
 
 export interface CompactResult {
@@ -57,6 +59,36 @@ const SUMMARY_PROMPT = `你正在压缩一段较长的 AI 编程助手对话历�
 %s
 </conversation>`;
 
+/**
+ * 有界并发 map：结果按入参顺序落位；首个错误后停止领取新任务，
+ * 等已在飞的任务收束后抛出该错误（不产生 unhandled rejection，不静默丢上下文）
+ */
+async function mapPool<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let idx = 0;
+  let firstErr: unknown = null;
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (idx < items.length && firstErr === null) {
+        const i = idx++;
+        try {
+          results[i] = await fn(items[i]);
+        } catch (e) {
+          firstErr ??= e;
+        }
+      }
+    },
+  );
+  await Promise.all(workers);
+  if (firstErr !== null) throw firstErr;
+  return results;
+}
+
 export async function compactMessages(
   messages: Message[],
   opts: CompactOptions,
@@ -92,12 +124,11 @@ export async function compactMessages(
     }
     if (buf.length > 0) chunks.push(buf.join('\n'));
 
-    // 逐块总结；summarizer 抛错时向上传播（禁止静默丢上下文）
-    const summaries: string[] = [];
-    for (const chunk of chunks) {
+    // 分块并行总结；summarizer 抛错时向上传播（禁止静默丢上下文）
+    const summaries = await mapPool(chunks, opts.concurrency ?? 1, (chunk) =>
       // 函数式替换：chunk 中的 $&、$1 等不被解释为替换模式，原样进入提示词
-      summaries.push(await opts.summarizer(SUMMARY_PROMPT.replace('%s', () => chunk)));
-    }
+      opts.summarizer(SUMMARY_PROMPT.replace('%s', () => chunk)),
+    );
 
     const summaryText = `<context-summary>\n以下是此前 ${turns.length - keepTurns} 轮对话的压缩摘要（原消息已移除）：\n\n${summaries.join('\n\n---\n\n')}\n</context-summary>`;
     const rebuilt: Message[] = [

@@ -113,6 +113,54 @@ describe('compactMessages', () => {
       }),
     ).rejects.toThrow('压缩模型不可用');
   });
+
+  it('分块并行总结：并发度受限、摘要顺序保持', async () => {
+    let running = 0;
+    let peak = 0;
+    const res = await compactMessages(bigHistory, {
+      keepRecentTurns: 4,
+      targetTokens: 1,
+      chunkTokens: 2000, // 中段会切成多块
+      concurrency: 2,
+      summarizer: async (text) => {
+        running++;
+        peak = Math.max(peak, running);
+        await new Promise((r) => setTimeout(r, 20));
+        running--;
+        // 用块内容特征标记顺序（首条问题的编号）
+        const m = /问题(\d+)/.exec(text);
+        return `摘要${m ? m[1] : '?'}`;
+      },
+      count: countMessages,
+    });
+    expect(res.compacted).toBe(true);
+    expect(peak).toBe(2); // 确实发生了并行，且没超并发上限
+    const summary = String(res.messages[0].content);
+    const idx0 = summary.indexOf('摘要0');
+    // 多块时摘要必须按原始轮次顺序拼接（并行完成顺序乱不影响结果）
+    const laterIdx = summary.search(/摘要[1-9]/);
+    expect(idx0).toBeGreaterThanOrEqual(0);
+    expect(laterIdx).toBeGreaterThan(idx0);
+  });
+
+  it('并行中某块失败：错误向上传播，不产出残缺摘要', async () => {
+    let n = 0;
+    await expect(
+      compactMessages(bigHistory, {
+        keepRecentTurns: 4,
+        targetTokens: 1,
+        chunkTokens: 2000,
+        concurrency: 2,
+        summarizer: async () => {
+          n++;
+          await new Promise((r) => setTimeout(r, 5));
+          if (n === 2) throw new Error('第二块超时');
+          return '摘要';
+        },
+        count: countMessages,
+      }),
+    ).rejects.toThrow('第二块超时');
+  });
 });
 
 describe('guardContext', () => {
@@ -123,6 +171,8 @@ describe('guardContext', () => {
     chunkTokens: 2000,
     target: 'kimi/m',
     fallbackToTarget: true,
+    timeoutMs: 180000,
+    concurrency: 2,
   };
 
   it('未超阈值时原样返回', async () => {

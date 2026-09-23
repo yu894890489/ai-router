@@ -118,7 +118,7 @@ describe('buildSummarizer', () => {
   const config = {
     compact: {
       thresholdRatio: 0.85, targetRatio: 0.7, keepRecentTurns: 6, chunkTokens: 40000,
-      target: 'kimi/small', fallbackToTarget: true,
+      target: 'kimi/small', fallbackToTarget: true, timeoutMs: 5000, concurrency: 2,
     },
     failover: { stickyTtlSeconds: 300, failureThreshold: 3, cooldownSeconds: 60, requestTimeoutMs: 5000 },
   } as never;
@@ -149,5 +149,32 @@ describe('buildSummarizer', () => {
     const providers = new Map([['kimi', fakeProvider('kimi', 'fail500')]]);
     const s = buildSummarizer(cfg, providers, cand('bailian', 'glm-5', 'text'));
     await expect(s('一段历史')).rejects.toThrow();
+  });
+
+  it('单次压缩内首选失败一次即降级：后续调用直接走兜底，不再重复踩首选', async () => {
+    let primaryCalls = 0;
+    let fallbackCalls = 0;
+    const counting = (name: string, fail: boolean, onCall: () => void): Provider => ({
+      name,
+      resolveModel: (a) => `${name}-${a}`,
+      contextWindowFor: () => 262144,
+      async send(): Promise<SendResult> {
+        throw new Error('未使用');
+      },
+      async sendSync(): Promise<string> {
+        onCall();
+        if (fail) throw new ProviderError(`${name} 超时`, undefined, true);
+        return `${name}摘要`;
+      },
+    });
+    const providers = new Map([['kimi', counting('kimi', true, () => primaryCalls++)]]);
+    const fb = counting('bailian', false, () => fallbackCalls++);
+    const s = buildSummarizer(config, providers, { provider: fb, alias: 'glm-5', ref: 'bailian/glm-5' });
+    // 模拟一次压缩的 3 个分块
+    await expect(s('块一')).resolves.toBe('bailian摘要');
+    await expect(s('块二')).resolves.toBe('bailian摘要');
+    await expect(s('块三')).resolves.toBe('bailian摘要');
+    expect(primaryCalls).toBe(1); // 首选只踩一次
+    expect(fallbackCalls).toBe(3);
   });
 });

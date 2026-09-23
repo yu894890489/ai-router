@@ -31,6 +31,7 @@ export async function guardContext(
     chunkTokens: cfg.chunkTokens,
     summarizer,
     count: countMessages,
+    concurrency: cfg.concurrency,
   });
 
   return {
