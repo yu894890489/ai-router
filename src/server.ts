@@ -225,9 +225,9 @@ export function createApp(configPath: string): Hono {
       }
 
       // 7b. 流式透传：旁路提取 usage + 助手文本，流结束后完成日志与轮次记录
-      const { clientStream, usage, text } = teeUsage(result.stream);
-      void Promise.all([usage, text])
-        .then(([u, assistantText]) => {
+      const { clientStream, usage, text, streamError } = teeUsage(result.stream);
+      void Promise.all([usage, text, streamError])
+        .then(([u, assistantText, sErr]) => {
           try {
             recordTurn(assistantText ?? '');
           } catch (e) {
@@ -235,6 +235,18 @@ export function createApp(configPath: string): Hono {
             console.error('[turns] 轮次记录失败:', e);
           }
           storage.writeBody(logId, 'response', { streamed: true, usage: u });
+          if (sErr) {
+            // 上游把错误混在 SSE 流里：客户端已收到错误事件，日志如实记失败
+            storage.finish(logId, {
+              ...baseLog,
+              status: 'error',
+              error: sErr,
+              inputTokens: u?.input_tokens,
+              outputTokens: u?.output_tokens,
+              durationMs: Date.now() - startedAt,
+            });
+            return;
+          }
           storage.finish(logId, {
             ...baseLog,
             status: 'success',

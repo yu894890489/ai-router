@@ -27,7 +27,7 @@ interface MockHandle {
   lastRequest: () => Record<string, unknown> | null;
 }
 
-function startMock(mode: 'ok' | 'fail500'): Promise<MockHandle> {
+function startMock(mode: 'ok' | 'fail500' | 'sseError'): Promise<MockHandle> {
   return new Promise((resolve) => {
     let last: Record<string, unknown> | null = null;
     const s = createServer((req, res) => {
@@ -37,6 +37,16 @@ function startMock(mode: 'ok' | 'fail500'): Promise<MockHandle> {
         last = JSON.parse(raw) as Record<string, unknown>;
         if (mode === 'fail500') {
           res.writeHead(500).end('boom');
+          return;
+        }
+        if (mode === 'sseError') {
+          // 上游 200 但把错误混在 SSE 流里（火山/阿里抽风的真实形态）
+          const ev = (t: string, d: unknown) => `event: ${t}\ndata: ${JSON.stringify(d)}\n\n`;
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          res.end(
+            ev('message_start', { type: 'message_start', message: { id: 'msg_e', type: 'message', role: 'assistant', model: 'mock', content: [], usage: { input_tokens: 42, output_tokens: 1 } } }) +
+            ev('error', { type: 'error', error: { type: 'overloaded_error', message: 'The service encountered an unexpected internal error' } }),
+          );
           return;
         }
         if (last.stream === false) {
@@ -58,7 +68,7 @@ function startMock(mode: 'ok' | 'fail500'): Promise<MockHandle> {
   });
 }
 
-async function setup(opts: { p1: 'ok' | 'fail500'; contextWindow?: number; p2ContextWindow?: number }) {
+async function setup(opts: { p1: 'ok' | 'fail500' | 'sseError'; contextWindow?: number; p2ContextWindow?: number }) {
   const p1 = await startMock(opts.p1);
   const p2 = await startMock('ok');
   const dir = mkdtempSync(join(tmpdir(), 'ai-router-e2e-'));
@@ -134,6 +144,23 @@ describe('集成：正常转发', () => {
     expect(row.input_tokens).toBe(42);
     expect(row.output_tokens).toBe(7);
     expect(row.failovered).toBe(0);
+    db.close();
+  });
+});
+
+describe('集成：上游 SSE error 事件', () => {
+  it('流中 error 事件透传给客户端，日志如实记 error 与上游原文', async () => {
+    const { app, dbPath } = await setup({ p1: 'sseError' });
+    const res = await post(app, 'sk-proj-a', CHAT);
+    expect(res.status).toBe(200); // 流已开始，状态码无法回头
+    const text = await res.text();
+    expect(text).toContain('overloaded_error'); // 客户端收到错误事件
+    await new Promise((r) => setTimeout(r, 200));
+    const db = new DatabaseSync(dbPath);
+    const row = db.prepare('SELECT * FROM requests ORDER BY created_at DESC LIMIT 1').get() as Record<string, unknown>;
+    expect(row.status).toBe('error'); // 不再伪装成 success
+    expect(row.error).toBe('The service encountered an unexpected internal error');
+    expect(row.provider).toBe('p1');
     db.close();
   });
 });

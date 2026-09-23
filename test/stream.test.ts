@@ -30,6 +30,28 @@ describe('teeUsage', () => {
     const { usage } = teeUsage(sse([['message_stop', { type: 'message_stop' }]]));
     await expect(usage).resolves.toBeNull();
   });
+
+  it('正常流 streamError 为 null', async () => {
+    const { streamError } = teeUsage(sse(EVENTS));
+    await expect(streamError).resolves.toBeNull();
+  });
+
+  it('上游 SSE error 事件：捕获错误原文，字节仍原样透传', async () => {
+    const events: Array<[string, unknown]> = [
+      ['message_start', { type: 'message_start', message: { id: 'msg_e', type: 'message', role: 'assistant', model: 'm', content: [], usage: { input_tokens: 50, output_tokens: 1 } } }],
+      ['error', { type: 'error', error: { type: 'overloaded_error', message: 'The service encountered an unexpected internal error' } }],
+    ];
+    const { clientStream, usage, streamError } = teeUsage(sse(events));
+    const raw = await new Response(clientStream).text();
+    expect(raw).toContain('overloaded_error'); // 客户端能收到错误事件
+    await expect(streamError).resolves.toBe('The service encountered an unexpected internal error');
+    await expect(usage).resolves.toEqual({ input_tokens: 50, output_tokens: 1 });
+  });
+
+  it('error 事件无 message 时给兜底文案', async () => {
+    const { streamError } = teeUsage(sse([['error', { type: 'error' }]]));
+    await expect(streamError).resolves.toBe('上游返回了未携带详情的错误事件');
+  });
 });
 
 describe('collectStreamToMessage', () => {
@@ -46,6 +68,15 @@ describe('collectStreamToMessage', () => {
 
   it('缺少 message_start 时报错', async () => {
     await expect(collectStreamToMessage(sse([['ping', {}]]))).rejects.toThrow(/message_start/);
+  });
+
+  it('只有上游 error 事件时抛出上游原文而非笼统的 message_start 错误', async () => {
+    const events: Array<[string, unknown]> = [
+      ['error', { type: 'error', error: { type: 'overloaded_error', message: 'The service encountered an unexpected internal error' } }],
+    ];
+    await expect(collectStreamToMessage(sse(events))).rejects.toThrow(
+      'The service encountered an unexpected internal error',
+    );
   });
 
   it('聚合 usage 合并 message_delta 的 output_tokens，保留 message_start 的 input_tokens', async () => {

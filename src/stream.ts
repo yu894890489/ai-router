@@ -18,6 +18,8 @@ export function teeUsage(stream: ReadableStream<Uint8Array>): {
   clientStream: ReadableStream<Uint8Array>;
   usage: Promise<Usage | null>;
   text: Promise<string>;
+  /** 上游 SSE error 事件的错误文本（或流读取异常）；正常结束为 null */
+  streamError: Promise<string | null>;
 } {
   let resolveUsage!: (u: Usage | null) => void;
   const usage = new Promise<Usage | null>((r) => {
@@ -33,6 +35,11 @@ export function teeUsage(stream: ReadableStream<Uint8Array>): {
     resolveText = r;
   });
   let reply = '';
+  let resolveStreamError!: (e: string | null) => void;
+  const streamError = new Promise<string | null>((r) => {
+    resolveStreamError = r;
+  });
+  let firstError: string | null = null;
 
   // 注意：不能用 stream.pipeThrough(transform)——若客户端不消费 clientStream，
   // 背压会阻止 transform/flush 执行，usage 永远不会 resolve。
@@ -60,6 +67,10 @@ export function teeUsage(stream: ReadableStream<Uint8Array>): {
       } else if (json.type === 'message_delta') {
         const u = json.usage as Usage | undefined;
         if (u) output = u.output_tokens ?? output;
+      } else if (json.type === 'error' && firstError === null) {
+        // 上游把错误混在 SSE 流里（type:"error"）：捕获原文，字节仍原样透传给客户端
+        const e = json.error as { message?: string; type?: string } | undefined;
+        firstError = e?.message ?? '上游返回了未携带详情的错误事件';
       }
     }
   };
@@ -76,14 +87,16 @@ export function teeUsage(stream: ReadableStream<Uint8Array>): {
       clientController.close();
       resolveUsage(saw ? { input_tokens: input, output_tokens: output } : null);
       resolveText(reply);
+      resolveStreamError(firstError);
     } catch (err) {
       clientController.error(err);
       resolveUsage(saw ? { input_tokens: input, output_tokens: output } : null);
       resolveText(reply);
+      resolveStreamError(firstError ?? `上游流读取异常: ${String(err)}`);
     }
   })();
 
-  return { clientStream, usage, text };
+  return { clientStream, usage, text, streamError };
 }
 
 interface AggregateBlock {
@@ -107,13 +120,17 @@ export async function collectStreamToMessage(
   const buffer = { text: '' };
   let message: AggregateMessage | null = null;
   const blocks: AggregateBlock[] = [];
+  let firstError: string | null = null; // 上游 SSE error 事件的原文
 
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer.text += decoder.decode(value, { stream: true });
     for (const json of parseSseEvents(buffer)) {
-      if (json.type === 'message_start') {
+      if (json.type === 'error' && firstError === null) {
+        const e = json.error as { message?: string } | undefined;
+        firstError = e?.message ?? '上游返回了未携带详情的错误事件';
+      } else if (json.type === 'message_start') {
         message = { ...(json.message as AggregateMessage), content: [] };
       } else if (json.type === 'content_block_start') {
         const i = json.index as number;
@@ -147,7 +164,7 @@ export async function collectStreamToMessage(
     }
   }
 
-  if (!message) throw new Error('上游流中未找到 message_start');
+  if (!message) throw new Error(firstError ?? '上游流中未找到 message_start');
   const content: Array<Record<string, unknown>> = blocks.filter(Boolean).map((b) => {
     if (b.type === 'tool_use' && typeof b.input === 'string') {
       let input: unknown = b.input;
