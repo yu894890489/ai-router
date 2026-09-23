@@ -178,9 +178,9 @@ async function load() {
     MODELS = m.models; THRESH = m.thresholdRatio;
     const s = await api('/admin/api/sessions?limit=5');
     document.getElementById('keybox').style.display = 'none';
-    document.getElementById('tbl').style.display = 'table';
     document.getElementById('now').textContent = fmtTs(new Date().toISOString());
-    if (VIEW !== 'list') return; // 聊天/搜索视图不被轮询打断
+    if (VIEW !== 'list') return; // 聊天/搜索视图不被轮询打断，也不显示会话表格
+    document.getElementById('tbl').style.display = 'table';
     document.getElementById('searchbar').style.display = 'block';
     const rows = document.getElementById('rows');
     rows.innerHTML='';
