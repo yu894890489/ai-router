@@ -21,6 +21,14 @@ export function createStorage(cfg: StorageConfig): LogStorage {
   const projects = new Map<string, string>();
 
   return {
+    findRequest(id: string) {
+      let v: { id: string; project: string; createdAt: string } | null = null;
+      safe(() => {
+        v = db.findRequest(id);
+      });
+      return v;
+    },
+
     start(entry: NewRequestLog): string {
       let id: string = randomUUID();
       safe(() => {

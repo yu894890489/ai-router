@@ -9,12 +9,13 @@ import { guardContext } from './pipeline/context-guard.js';
 import { executeWithFailover, resolveChainRefs, selectChain, type Candidate } from './pipeline/router.js';
 import { applySpoof } from './pipeline/spoof.js';
 import { extractTitle } from './pipeline/title.js';
+import { extractUserTurn } from './pipeline/turns.js';
 import { ProviderError, type Provider } from './providers/base.js';
 import { createProviders } from './providers/index.js';
 import { CircuitBreaker, SessionStore } from './session/store.js';
 import { createStorage, type LogStorage } from './storage/index.js';
 import { collectStreamToMessage, teeUsage } from './stream.js';
-import type { AnthropicRequest, Usage } from './types.js';
+import type { AnthropicRequest, Message, Usage } from './types.js';
 
 export interface AppState {
   config: RouterConfig;
@@ -22,6 +23,8 @@ export interface AppState {
   storage: LogStorage;
   breaker: CircuitBreaker;
   sessions: SessionStore;
+  /** 会话 -> 上一次请求的客户端 messages（轮次前缀比对用，上限 20 个会话 FIFO 淘汰） */
+  turnCache: Map<string, Message[]>;
 }
 
 function anthropicError(type: string, message: string) {
@@ -35,6 +38,7 @@ function buildState(config: RouterConfig): AppState {
     storage: createStorage(config.storage),
     breaker: new CircuitBreaker(config.failover.failureThreshold, config.failover.cooldownSeconds),
     sessions: new SessionStore(config.failover.stickyTtlSeconds),
+    turnCache: new Map(),
   };
 }
 
@@ -118,6 +122,19 @@ export function createApp(configPath: string): Hono {
       });
     };
 
+    // 轮次提取：prev 取客户端视角 messages（压缩只改上游请求，客户端历史 append-only）
+    const recordTurn = (assistantText: string) => {
+      if (!sessionId) return;
+      const prev = state.turnCache.get(sessionId) ?? null;
+      const userText = extractUserTurn(prev, body.messages);
+      if (state.turnCache.size >= 20) {
+        const oldest = state.turnCache.keys().next().value;
+        if (oldest !== undefined) state.turnCache.delete(oldest);
+      }
+      state.turnCache.set(sessionId, body.messages);
+      storage.turns.addTurn({ sessionId, requestId: logId, userText, assistantText });
+    };
+
     try {
       // 3. 场景路由：rules 精确匹配 + "*" 兜底；会话 override 置顶（钉住优先、规则链兜底）
       const ruleRefs = config.routing.rules[body.model] ?? config.routing.rules['*'];
@@ -182,7 +199,15 @@ export function createApp(configPath: string): Hono {
 
       // 7a. 客户端要非流式：聚合后一次性返回
       if (body.stream === false) {
-        const message = (await collectStreamToMessage(result.stream)) as { usage?: Usage };
+        const message = (await collectStreamToMessage(result.stream)) as {
+          usage?: Usage;
+          content?: Array<Record<string, unknown>>;
+        };
+        const assistantText = ((message.content ?? []) as Array<Record<string, unknown>>)
+          .filter((b) => b.type === 'text')
+          .map((b) => (b.text as string) ?? '')
+          .join('\n');
+        recordTurn(assistantText);
         storage.writeBody(logId, 'response', message);
         storage.finish(logId, {
           ...baseLog,
@@ -194,10 +219,11 @@ export function createApp(configPath: string): Hono {
         return c.json(message);
       }
 
-      // 7b. 流式透传：旁路提取 usage，流结束后完成日志
-      const { clientStream, usage } = teeUsage(result.stream);
-      void usage
-        .then((u) => {
+      // 7b. 流式透传：旁路提取 usage + 助手文本，流结束后完成日志与轮次记录
+      const { clientStream, usage, text } = teeUsage(result.stream);
+      void Promise.all([usage, text])
+        .then(([u, assistantText]) => {
+          recordTurn(assistantText ?? '');
           storage.writeBody(logId, 'response', { streamed: true, usage: u });
           storage.finish(logId, {
             ...baseLog,
@@ -223,6 +249,7 @@ export function createApp(configPath: string): Hono {
       const type = status === 401 || status === 403 ? 'authentication_error' : 'overloaded_error';
       const message = e instanceof Error ? e.message : String(e);
       touchSession();
+      recordTurn('');
       storage.finish(logId, {
         status: 'error',
         error: message,

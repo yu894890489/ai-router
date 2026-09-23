@@ -1,6 +1,7 @@
 import type { Hono } from 'hono';
 import { parseModelRef } from './config.js';
 import { extractApiKey } from './pipeline/auth.js';
+import { readBody } from './storage/bodylog.js';
 import { ADMIN_HTML } from './admin-page.js';
 import type { AppState } from './server.js';
 
@@ -78,5 +79,43 @@ export function registerAdminRoutes(app: Hono, getState: () => AppState): void {
       sessions.unbind(sessionId);
     }
     return c.json({ ok: true });
+  });
+
+  app.get('/admin/api/sessions/:id/turns', (c) => {
+    const { storage } = getState();
+    const sessionId = c.req.param('id');
+    if (!storage.sessions.getSession(sessionId)) {
+      return c.json({ error: '会话不存在' }, 404);
+    }
+    const turns = storage.turns.listTurns(sessionId).map((t) => ({
+      seq: t.seq,
+      userText: t.userText,
+      assistantText: t.assistantText,
+      requestId: t.requestId,
+      createdAt: t.createdAt,
+    }));
+    return c.json({ turns });
+  });
+
+  app.get('/admin/api/requests/:id/body', async (c) => {
+    const { config, storage } = getState();
+    const id = c.req.param('id');
+    const req = storage.findRequest(id);
+    if (!req) return c.json({ error: '请求不存在' }, 404);
+    const body = await readBody(config.storage.jsonlDir, req.project, req.createdAt, id);
+    if (!body) return c.json({ error: '报文不存在（日志文件已清理？）' }, 404);
+    return c.json(body);
+  });
+
+  app.get('/admin/api/search', (c) => {
+    const { storage } = getState();
+    const q = (c.req.query('q') ?? '').trim();
+    if (!q) return c.json({ error: '缺少 q 参数' }, 400);
+    const hits = storage.turns.search.search(q, {
+      project: c.req.query('project') || undefined,
+      sessionId: c.req.query('sessionId') || undefined,
+      limit: 30,
+    });
+    return c.json({ hits });
   });
 }

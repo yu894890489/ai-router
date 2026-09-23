@@ -108,6 +108,7 @@ describe('applyConfigReload', () => {
       storage: null as unknown as AppState['storage'],
       breaker,
       sessions: null as unknown as AppState['sessions'],
+      turnCache: new Map(),
     };
   }
 

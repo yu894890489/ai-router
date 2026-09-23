@@ -17,6 +17,7 @@ function* parseSseEvents(buffer: { text: string }): Generator<Record<string, unk
 export function teeUsage(stream: ReadableStream<Uint8Array>): {
   clientStream: ReadableStream<Uint8Array>;
   usage: Promise<Usage | null>;
+  text: Promise<string>;
 } {
   let resolveUsage!: (u: Usage | null) => void;
   const usage = new Promise<Usage | null>((r) => {
@@ -27,6 +28,11 @@ export function teeUsage(stream: ReadableStream<Uint8Array>): {
   let input = 0;
   let output = 0;
   let saw = false;
+  let resolveText!: (t: string) => void;
+  const text = new Promise<string>((r) => {
+    resolveText = r;
+  });
+  let reply = '';
 
   // 注意：不能用 stream.pipeThrough(transform)——若客户端不消费 clientStream，
   // 背压会阻止 transform/flush 执行，usage 永远不会 resolve。
@@ -48,6 +54,9 @@ export function teeUsage(stream: ReadableStream<Uint8Array>): {
           output = u.output_tokens ?? 0;
           saw = true;
         }
+      } else if (json.type === 'content_block_delta') {
+        const d = json.delta as { type?: string; text?: string } | undefined;
+        if (d?.type === 'text_delta') reply += d.text ?? '';
       } else if (json.type === 'message_delta') {
         const u = json.usage as Usage | undefined;
         if (u) output = u.output_tokens ?? output;
@@ -66,13 +75,15 @@ export function teeUsage(stream: ReadableStream<Uint8Array>): {
       }
       clientController.close();
       resolveUsage(saw ? { input_tokens: input, output_tokens: output } : null);
+      resolveText(reply);
     } catch (err) {
       clientController.error(err);
       resolveUsage(saw ? { input_tokens: input, output_tokens: output } : null);
+      resolveText(reply);
     }
   })();
 
-  return { clientStream, usage };
+  return { clientStream, usage, text };
 }
 
 interface AggregateBlock {

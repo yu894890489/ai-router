@@ -71,6 +71,7 @@ export interface SearchBackend {
 }
 
 export interface LogStorage {
+  findRequest(id: string): { id: string; project: string; createdAt: string } | null;
   start(entry: NewRequestLog): string;
   finish(id: string, patch: RequestLogPatch): void;
   writeBody(id: string, kind: 'request' | 'response', payload: unknown): void;

@@ -135,6 +135,13 @@ export function createSqliteStorage(path: string): LogStorage {
   };
 
   return {
+    findRequest(id: string) {
+      const row = db.prepare('SELECT id, project, created_at FROM requests WHERE id = ?').get(id) as
+        | { id: string; project: string; created_at: string }
+        | undefined;
+      return row ? { id: row.id, project: row.project, createdAt: row.created_at } : null;
+    },
+
     start(entry: NewRequestLog): string {
       const id = randomUUID();
       db.prepare(
