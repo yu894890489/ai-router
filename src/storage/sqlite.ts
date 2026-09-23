@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { LogStorage, NewRequestLog, RequestLogPatch, SessionDirectory, SessionInfo } from './interface.js';
+import type { LogStorage, NewRequestLog, NewTurn, RequestLogPatch, SearchBackend, SessionDirectory, SessionInfo, Turn } from './interface.js';
+import { createLikeBackend, createSqliteFtsBackend } from './search.js';
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS requests (
@@ -36,6 +37,16 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_seen TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_last_seen ON sessions(last_seen);
+CREATE TABLE IF NOT EXISTS turns (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  user_text TEXT NOT NULL,
+  assistant_text TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id, seq);
 `;
 
 // RequestLogPatch 字段 -> 列名与值变换
@@ -57,6 +68,18 @@ export function createSqliteStorage(path: string): LogStorage {
   mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec(DDL);
+
+  // FTS5 探测：不可用（极少见）时 search 降级 LIKE
+  let ftsOk = true;
+  try {
+    // trigram 分词：unicode61 无法命中 CJK 子串（如"空指针"），trigram 支持中日韩子串与标识符匹配
+    db.exec(
+      "CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5(user_text, assistant_text, content='turns', content_rowid='rowid', tokenize='trigram')",
+    );
+  } catch {
+    ftsOk = false;
+  }
+  const searchBackend: SearchBackend = (ftsOk ? createSqliteFtsBackend(db) : null) ?? createLikeBackend(db);
 
   interface SessionRow {
     session_id: string;
@@ -141,6 +164,37 @@ export function createSqliteStorage(path: string): LogStorage {
     },
 
     sessions,
+
+    turns: {
+      addTurn(t: NewTurn): void {
+        const id = randomUUID();
+        const seq =
+          (db.prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS s FROM turns WHERE session_id = ?').get(t.sessionId) as { s: number }).s;
+        const createdAt = new Date().toISOString();
+        db.prepare(
+          'INSERT INTO turns (id, session_id, request_id, seq, user_text, assistant_text, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        ).run(id, t.sessionId, t.requestId, seq, t.userText, t.assistantText, createdAt);
+        searchBackend.indexTurn({ ...t, id, seq, createdAt });
+      },
+      listTurns(sessionId: string): Turn[] {
+        const rows = db
+          .prepare('SELECT * FROM turns WHERE session_id = ? ORDER BY seq ASC')
+          .all(sessionId) as unknown as Array<{
+          id: string; session_id: string; request_id: string; seq: number;
+          user_text: string; assistant_text: string; created_at: string;
+        }>;
+        return rows.map((r) => ({
+          id: r.id,
+          sessionId: r.session_id,
+          requestId: r.request_id,
+          seq: r.seq,
+          userText: r.user_text,
+          assistantText: r.assistant_text,
+          createdAt: r.created_at,
+        }));
+      },
+      search: searchBackend,
+    },
 
     close(): void {
       db.close();

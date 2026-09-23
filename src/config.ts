@@ -58,6 +58,9 @@ const configSchema = z.object({
       jsonlDir: z.string().default('./data/logs'),
     })
     .default({ sqlitePath: './data/router.db', jsonlDir: './data/logs' }),
+  search: z
+    .object({ backend: z.enum(['fts', 'es']).default('fts') })
+    .default({ backend: 'fts' }),
 });
 
 export type RouterConfig = z.infer<typeof configSchema>;
@@ -93,6 +96,10 @@ export function loadConfig(path: string): RouterConfig {
     throw new Error(`配置文件非法 (${path}):\n${issues}`);
   }
   const cfg = result.data;
+
+  if (cfg.search.backend === 'es') {
+    throw new Error('search.backend = "es" 尚未实现，请使用 "fts"');
+  }
 
   if (!('*' in cfg.routing.rules)) {
     throw new Error('routing.rules 缺少 "*" 兜底规则');

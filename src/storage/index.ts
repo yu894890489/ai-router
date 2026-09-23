@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { StorageConfig } from '../config.js';
-import type { LogStorage, NewRequestLog, RequestLogPatch, SessionInfo } from './interface.js';
+import type { LogStorage, NewRequestLog, NewTurn, RequestLogPatch, SearchHit, SessionInfo } from './interface.js';
 import { createJsonlWriter } from './jsonl.js';
 import { createSqliteStorage } from './sqlite.js';
 
@@ -66,6 +66,31 @@ export function createStorage(cfg: StorageConfig): LogStorage {
           v = db.sessions.listRecent(limit);
         });
         return v;
+      },
+    },
+
+    turns: {
+      addTurn(t: NewTurn) {
+        safe(() => db.turns.addTurn(t));
+      },
+      listTurns(sessionId: string) {
+        let v: ReturnType<typeof db.turns.listTurns> = [];
+        safe(() => {
+          v = db.turns.listTurns(sessionId);
+        });
+        return v;
+      },
+      search: {
+        indexTurn() {
+          /* 索引由 sqlite addTurn 内部完成，这里不重复暴露 */
+        },
+        search(query: string, filter?: { project?: string; sessionId?: string; limit?: number }) {
+          let v: SearchHit[] = [];
+          safe(() => {
+            v = db.turns.search.search(query, filter);
+          });
+          return v;
+        },
       },
     },
 
