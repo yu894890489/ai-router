@@ -41,6 +41,8 @@ const configSchema = z.object({
     fallbackToTarget: z.boolean().default(true),
     timeoutMs: z.number().int().positive().default(400000), // 总结专用，独立于转发超时（40k token 非流式总结 180s 实测不够）
     concurrency: z.number().int().min(1).max(8).default(2), // 分块总结并行度
+    // 相邻分块启动间隔 ms：平滑请求速率（上游对速率突增限流，如 bailian Throttling）
+    chunkIntervalMs: z.number().int().min(0).default(2000),
     // 候选窗口 >= 该值时跳过路由侧压缩：1M 级大窗口由客户端（如 claude code）自行压缩，
     // 路由侧只在降级到较小窗口（如 256k）时才需要把超窗历史压下来
     skipIfWindowGte: z.number().int().positive().default(1_000_000),

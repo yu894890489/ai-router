@@ -46,6 +46,7 @@ export async function guardContext(
       summarizer,
       count: countMessages,
       concurrency: cfg.concurrency,
+      chunkIntervalMs: cfg.chunkIntervalMs,
     });
   } catch (e) {
     throw new CompactError(

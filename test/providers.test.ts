@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createAnthropicProvider, ProviderError } from '../src/providers/base.js';
@@ -203,6 +203,64 @@ describe('providers/base', () => {
     // 第二次调用：直接不带参数，只发一次
     await expect(p.sendSync(BODY, 5000)).resolves.toBe('摘要');
     expect(n).toBe(3);
+  }, 15000);
+
+  it('sendSync: 上游限流(Throttling)时等待后原样重试一次', async () => {
+    vi.useFakeTimers();
+    try {
+      let n = 0;
+      const base = await startMock(() => {
+        n++;
+        if (n === 1) {
+          return {
+            status: 200,
+            sse: true,
+            body: 'event:error\ndata: {"code":"Throttling","message":"Request rate increased too quickly."}\n\n',
+          };
+        }
+        return { status: 200, sse: true, body: sseSummary('摘要') };
+      });
+      const p = createAnthropicProvider('x', cfg(base));
+      let settled = false;
+      const promise = p.sendSync(BODY, 30000).finally(() => {
+        settled = true;
+      });
+      // 循环推进虚拟时钟越过限流退避（fetch 完成时机与虚拟时钟解耦，须推进到 promise 落定）
+      for (let i = 0; i < 50 && !settled; i++) {
+        await vi.advanceTimersByTimeAsync(1000);
+      }
+      await expect(promise).resolves.toBe('摘要');
+      expect(n).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 15000);
+
+  it('sendSync: 限流重试后仍限流则抛错(不无限重试)', async () => {
+    vi.useFakeTimers();
+    try {
+      let n = 0;
+      const base = await startMock(() => {
+        n++;
+        return {
+          status: 200,
+          sse: true,
+          body: 'event:error\ndata: {"code":"Throttling","message":"Request rate increased too quickly."}\n\n',
+        };
+      });
+      const p = createAnthropicProvider('x', cfg(base));
+      let settled = false;
+      const promise = p.sendSync(BODY, 60000).finally(() => {
+        settled = true;
+      });
+      for (let i = 0; i < 50 && !settled; i++) {
+        await vi.advanceTimersByTimeAsync(1000);
+      }
+      await expect(promise).rejects.toThrow('Throttling');
+      expect(n).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   }, 15000);
 
   it('sendSync: 上游 400 但与 thinking 无关时不做自适应重试', async () => {

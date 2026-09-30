@@ -128,6 +128,22 @@ describe('executeWithFailover', () => {
     expect(breaker.canUse('kimi/k3')).toBe(false);
   });
 
+  it('转发失败计入熔断时输出失败原因日志（熔断可溯源）', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await executeWithFailover(
+        [cand('kimi', 'k3', 'fail500'), cand('volcengine', 'glm-5.3')],
+        PREPARE, 5000, new CircuitBreaker(99, 60), new SessionStore(300), null,
+      );
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('kimi/k3'),
+        expect.stringContaining('kimi 500'),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('prepare 抛 CompactError 不计入熔断，仍 failover 到下一家', async () => {
     const breaker = new CircuitBreaker(1, 60); // 阈值 1：任何 recordFailure 都会立即熔断
     const r = await executeWithFailover(

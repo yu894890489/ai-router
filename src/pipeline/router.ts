@@ -69,10 +69,16 @@ export async function executeWithFailover(
     } catch (e) {
       lastError = e;
       if (e instanceof ProviderError && (e.status === 401 || e.status === 403)) {
+        console.warn(`[failover] 上游 ${candidate.ref} 鉴权失败（${e.status}）: ${e.message}`);
         breaker.ban(candidate.ref); // Key 问题：封禁而非盲切
       } else if (e instanceof CompactError) {
         // 压缩失败不计入转发熔断（详见 CompactError 注释），但请求仍失败并继续 failover
       } else {
+        // 失败原因必须可见：熔断日志只有 ref，没有它就无法回答"为什么熔断"
+        console.warn(
+          `[failover] 上游 ${candidate.ref} 请求失败:`,
+          e instanceof Error ? e.message : String(e),
+        );
         breaker.recordFailure(candidate.ref);
       }
     }

@@ -63,6 +63,7 @@ compact:
   fallbackToTarget: true   # 链耗尽前最后落到当前转发目标
   timeoutMs: 400000        # 单次总结请求超时（非流式大块总结，180s 实测不够）
   concurrency: 1           # 分块总结并行度（bailian 等编码端点对并发大块请求限流，建议 1）
+  chunkIntervalMs: 2000    # 相邻分块启动间隔，平滑请求速率（上游对速率突增限流）
   skipIfWindowGte: 1000000 # 候选窗口 >= 此值时跳过路由侧压缩（1M 模型由 claude code 自行压缩，降级到 256k 时才压缩）
 
 failover:

@@ -49,6 +49,8 @@ export function createAnthropicProvider(name: string, cfg: ProviderConfig): Prov
 
   /** 该厂商模型不支持关闭思考时置位（如 volcengine glm-5.3 强制思考），后续 sendSync 不再携带参数 */
   let thinkingDisableUnsupported = false;
+  /** 限流退避时长：足够跨越上游的短窗口限流，又不至于拖垮压缩整体时延 */
+  const throttleBackoffMs = 15000;
 
   /** fetch 失败时 Node 把真实原因挂在 cause（ECONNRESET/ETIMEDOUT 等），必须带出否则日志无法定位 */
   function describeNetError(e: unknown): string {
@@ -144,7 +146,12 @@ export function createAnthropicProvider(name: string, cfg: ProviderConfig): Prov
             true,
           );
         }
-        const message = await collectStreamToMessage(res.body as ReadableStream<Uint8Array>);
+        const message = await collectStreamToMessage(res.body as ReadableStream<Uint8Array>).catch(
+          (e: unknown) => {
+            // 上游流内错误（error 事件/缺 message_start 等）统一为 ProviderError
+            throw new ProviderError(e instanceof Error ? e.message : String(e), undefined, true);
+          },
+        );
         const text = ((message.content ?? []) as Array<{ type: string; text?: string }>)
           .filter((b) => b.type === 'text')
           .map((b) => b.text ?? '')
@@ -155,9 +162,20 @@ export function createAnthropicProvider(name: string, cfg: ProviderConfig): Prov
 
       // glm 系思考模型会把输出预算耗在思考上导致正文为空：总结请求关闭思考；
       // 强制思考的模型会 400 报 not supported —— 记住该厂商实例，后续不再携带该参数
+      const sendWithThrottleRetry = async (extra: Record<string, unknown>): Promise<string> => {
+        try {
+          return await sendOnce(extra);
+        } catch (e) {
+          // 上游限流（Throttling）是瞬时的：等待后退避重试一次，仍失败则交给压缩链降级
+          if (!(e instanceof Error) || !/Throttling|Request rate/i.test(e.message)) throw e;
+          console.warn(`[provider] 上游 ${name} 限流，${throttleBackoffMs}ms 后重试一次`);
+          await new Promise((r) => setTimeout(r, throttleBackoffMs));
+          return await sendOnce(extra);
+        }
+      };
       if (!thinkingDisableUnsupported) {
         try {
-          return await sendOnce({ thinking: { type: 'disabled' } });
+          return await sendWithThrottleRetry({ thinking: { type: 'disabled' } });
         } catch (e) {
           const unsupported =
             e instanceof ProviderError && e.status === 400 && e.message.includes('thinking');
@@ -166,7 +184,7 @@ export function createAnthropicProvider(name: string, cfg: ProviderConfig): Prov
           console.warn(`[provider] 上游 ${name} 不支持关闭思考，总结请求不再携带该参数`);
         }
       }
-      return await sendOnce({});
+      return await sendWithThrottleRetry({});
     },
   };
 }

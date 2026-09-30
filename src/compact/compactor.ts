@@ -22,6 +22,8 @@ export interface CompactOptions {
   count: (messages: Message[]) => number;
   /** 分块总结并行度，默认 1（串行） */
   concurrency?: number;
+  /** 相邻分块启动间隔 ms（平滑请求速率，缓解上游限流），0 关闭，默认 2000 */
+  chunkIntervalMs?: number;
 }
 
 export interface CompactResult {
@@ -78,7 +80,7 @@ const SUMMARY_PROMPT = `你正在压缩一段较长的 AI 编程助手对话历�
 async function mapPool<T, R>(
   items: T[],
   concurrency: number,
-  fn: (item: T) => Promise<R>,
+  fn: (item: T, index: number) => Promise<R>,
 ): Promise<R[]> {
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     throw new Error(`mapPool: 非法并发度 ${concurrency}`);
@@ -92,7 +94,7 @@ async function mapPool<T, R>(
       while (idx < items.length && firstErr === null) {
         const i = idx++;
         try {
-          results[i] = await fn(items[i]);
+          results[i] = await fn(items[i], i);
         } catch (e) {
           firstErr ??= e;
         }
@@ -139,11 +141,17 @@ export async function compactMessages(
     }
     if (buf.length > 0) chunks.push(buf.join('\n'));
 
-    // 分块并行总结；summarizer 抛错时向上传播（禁止静默丢上下文）
-    const summaries = await mapPool(chunks, opts.concurrency ?? 1, (chunk) =>
+    // 分块并行总结；summarizer 抛错时向上传播（禁止静默丢上下文）。
+    // 分块按 chunkIntervalMs 错峰启动，平滑请求速率（上游对速率突增限流）；
+    // 库层默认 0（不延迟），由配置层提供产品默认值
+    const intervalMs = opts.chunkIntervalMs ?? 0;
+    const summaries = await mapPool(chunks, opts.concurrency ?? 1, async (chunk, i) => {
+      if (i > 0 && intervalMs > 0) {
+        await new Promise((r) => setTimeout(r, intervalMs));
+      }
       // 函数式替换：chunk 中的 $&、$1 等不被解释为替换模式，原样进入提示词
-      opts.summarizer(SUMMARY_PROMPT.replace('%s', () => chunk)),
-    );
+      return opts.summarizer(SUMMARY_PROMPT.replace('%s', () => chunk));
+    });
 
     const summaryText = `<context-summary>\n以下是此前 ${turns.length - keepTurns} 轮对话的压缩摘要（原消息已移除）：\n\n${summaries.join('\n\n---\n\n')}\n</context-summary>`;
     const rebuilt: Message[] = [

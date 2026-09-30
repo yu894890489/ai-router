@@ -178,6 +178,26 @@ describe('compactMessages', () => {
       }),
     ).rejects.toThrow('非法并发度');
   });
+
+  it('分块之间按 chunkIntervalMs 间隔启动，平滑请求速率（bailian Throttling 缓解）', async () => {
+    const starts: number[] = [];
+    await compactMessages(bigHistory, {
+      keepRecentTurns: 4,
+      targetTokens: 1,
+      chunkTokens: 2000,
+      concurrency: 1,
+      chunkIntervalMs: 300,
+      summarizer: async () => {
+        starts.push(Date.now());
+        return '摘要';
+      },
+      count: countMessages,
+    });
+    expect(starts.length).toBeGreaterThan(1);
+    // 轮内分块必须间隔 >=250ms；轮与轮的衔接处允许小间隔（最多 3 轮尝试 → 至多 2 个边界）
+    const gaps = starts.slice(1).map((t, i) => t - starts[i]);
+    expect(gaps.filter((g) => g >= 250).length).toBeGreaterThanOrEqual(gaps.length - 2);
+  }, 30000); // 3 轮压缩尝试 × 分块间隔，高于默认 5s
 });
 
 describe('guardContext', () => {
@@ -191,6 +211,7 @@ describe('guardContext', () => {
     timeoutMs: 180000,
     concurrency: 2,
     skipIfWindowGte: 1_000_000,
+    chunkIntervalMs: 0,
   };
 
   const overThresholdMessages = (): Message[] => {
