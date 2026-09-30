@@ -15,7 +15,8 @@ export const ADMIN_HTML = `<!doctype html>
   th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #262a33; vertical-align: top; }
   th { color: #8b8f98; font-weight: 500; white-space: nowrap; }
   .title { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .sid { color: #8b8f98; font-family: ui-monospace, monospace; font-size: 12px; }
+  .sid { color: #8b8f98; font-family: ui-monospace, monospace; font-size: 12px;
+         max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   select { background: #1a1e26; color: #e6e6e6; border: 1px solid #333a47; border-radius: 6px; padding: 6px 8px; }
   .warn { color: #f0b429; cursor: help; }
   .cur { font-family: ui-monospace, monospace; font-size: 12px; }
@@ -30,6 +31,7 @@ export const ADMIN_HTML = `<!doctype html>
   #searchbar input { width: 100%; max-width: 520px; padding: 8px; background: #1a1e26; color: #e6e6e6;
                      border: 1px solid #333a47; border-radius: 6px; }
   .back { color: #3b82f6; cursor: pointer; margin-bottom: 12px; display: inline-block; }
+  a.navlink { color: #3b82f6; text-decoration: none; }
   .turn { margin-bottom: 14px; }
   .bubble { max-width: 78%; padding: 10px 12px; border-radius: 10px; white-space: pre-wrap; word-break: break-word; }
   .b-user { background: #1d3a5f; margin-left: auto; }
@@ -48,7 +50,7 @@ export const ADMIN_HTML = `<!doctype html>
 </head>
 <body>
 <h1>ai-router · 会话切换器</h1>
-<div class="sub">最近 5 个活跃会话 · 钉住优先，规则链兜底 · <span id="now"></span></div>
+<div class="sub"><span id="sessCount">活跃会话</span> · 钉住优先，规则链兜底 · <a class="navlink" href="/admin/stats">统计看板</a> · <span id="now"></span></div>
 <div id="searchbar" style="display:none">
   <input id="q" type="search" placeholder="搜索对话内容，回车搜索" />
 </div>
@@ -60,7 +62,7 @@ export const ADMIN_HTML = `<!doctype html>
 </div>
 <table id="tbl" style="display:none">
   <thead><tr>
-    <th>会话</th><th>项目</th><th>当前模型</th><th>最近 token</th><th>活跃时间</th><th>切换模型</th><th>对话</th>
+    <th>会话</th><th>session_id</th><th>项目</th><th>当前模型</th><th>最近 token</th><th>活跃时间</th><th>切换模型</th><th>对话</th>
   </tr></thead>
   <tbody id="rows"></tbody>
 </table>
@@ -118,11 +120,14 @@ function buildRow(it) {
   titleDiv.className = 'title';
   titleDiv.title = it.title || '';
   titleDiv.textContent = it.title || '（无标题）';
-  const sidDiv = document.createElement('div');
-  sidDiv.className = 'sid';
-  sidDiv.textContent = it.sessionId;
-  tdSession.append(titleDiv, sidDiv);
+  tdSession.appendChild(titleDiv);
   tr.appendChild(tdSession);
+
+  const tdSid = document.createElement('td');
+  tdSid.className = 'sid';
+  tdSid.title = it.sessionId;
+  tdSid.textContent = it.sessionId;
+  tr.appendChild(tdSid);
 
   tr.appendChild(cell('', it.project));
 
@@ -176,9 +181,10 @@ async function load() {
   try {
     const m = await api('/admin/api/models');
     MODELS = m.models; THRESH = m.thresholdRatio;
-    const s = await api('/admin/api/sessions?limit=5');
+    const s = await api('/admin/api/sessions?limit=100');
     document.getElementById('keybox').style.display = 'none';
     document.getElementById('now').textContent = fmtTs(new Date().toISOString());
+    document.getElementById('sessCount').textContent = '最近 ' + s.sessions.length + ' 个活跃会话';
     document.getElementById('searchbar').style.display = 'block'; // 搜索框所有视图可见（设计 §5）
     if (VIEW !== 'list') return; // 聊天/搜索视图不被轮询打断；tbl 仅 list 视图显示
     document.getElementById('tbl').style.display = 'table';
@@ -186,7 +192,7 @@ async function load() {
     rows.innerHTML='';
     for (const it of s.sessions) rows.appendChild(buildRow(it));
     if (s.sessions.length === 0) {
-      rows.innerHTML='<tr><td colspan="7" class="muted">还没有会话记录。用 Claude Code 发一条消息后再来。</td></tr>';
+      rows.innerHTML='<tr><td colspan="8" class="muted">还没有会话记录。用 Claude Code 发一条消息后再来。</td></tr>';
     }
     if (!timer) timer = setInterval(load, 15000); // 登录成功后才轮询
   } catch (e) { /* 401 已处理 */ }
@@ -224,13 +230,15 @@ async function openChat(sid, title, seq) {
     return;
   }
   for (const t of data.turns) box.appendChild(buildTurn(t));
-  // 搜索结果跳转：高亮目标轮次并滚动到位（设计 §5）
+  // 搜索结果跳转：高亮目标轮次并滚动到位（设计 §5）；普通打开默认定位到最下方（最新轮次）
   if (seq != null) {
     const el = box.querySelector('[data-seq="' + seq + '"]');
     if (el) {
       el.classList.add('hl');
       el.scrollIntoView();
     }
+  } else {
+    window.scrollTo(0, document.documentElement.scrollHeight);
   }
 }
 

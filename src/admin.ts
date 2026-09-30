@@ -3,11 +3,13 @@ import { parseModelRef } from './config.js';
 import { extractApiKey } from './pipeline/auth.js';
 import { readBody } from './storage/bodylog.js';
 import { ADMIN_HTML } from './admin-page.js';
+import { ADMIN_STATS_HTML } from './admin-stats-page.js';
 import type { AppState } from './server.js';
 
 /** 管理页与数据 API。页面不鉴权（无数据），/admin/api/* 用 accessKeys 鉴权。 */
 export function registerAdminRoutes(app: Hono, getState: () => AppState): void {
   app.get('/admin', (c) => c.html(ADMIN_HTML));
+  app.get('/admin/stats', (c) => c.html(ADMIN_STATS_HTML));
 
   app.use('/admin/api/*', async (c, next) => {
     const { config } = getState();
@@ -27,12 +29,20 @@ export function registerAdminRoutes(app: Hono, getState: () => AppState): void {
   app.get('/admin/api/sessions', (c) => {
     const { storage, sessions } = getState();
     const raw = Number(c.req.query('limit'));
-    const limit = Math.min(Math.max(Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 5, 1), 50);
+    const limit = Math.min(Math.max(Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 50, 1), 500);
     const list = storage.sessions.listRecent(limit).map((s) => ({
       ...s,
       currentRef: s.overrideRef ?? sessions.get(s.sessionId) ?? null,
     }));
     return c.json({ sessions: list });
+  });
+
+  app.get('/admin/api/stats', (c) => {
+    const { storage } = getState();
+    const raw = Number(c.req.query('days'));
+    // 0 = 全部；非法/缺省按 30 天
+    const days = Number.isFinite(raw) && raw >= 0 ? Math.min(Math.floor(raw), 3650) : 30;
+    return c.json(storage.stats.aggregate(days));
   });
 
   app.get('/admin/api/models', (c) => {

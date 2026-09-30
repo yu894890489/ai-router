@@ -185,5 +185,57 @@ describe('admin 安全与输入健壮性（task-3 评审修复）', () => {
     expect(res.status).toBe(200);
     const list = await res.json();
     expect(list.sessions).toHaveLength(2); // Math.floor(2.5) = 2
+  }, 20000); // 上游不可达触发连接重试，耗时高于默认 5s
+
+  it('默认 limit 50：不传 limit 时最多返回 50 条', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ai-router-adm-'));
+    const app = createApp(writeConfig(dir));
+    for (let i = 0; i < 51; i++) {
+      await sendFailingChat(app, `user_session_d${i}`, `标题${i}`);
+    }
+    const list = await (
+      await app.request('http://localhost/admin/api/sessions', { headers: H })
+    ).json();
+    expect(list.sessions).toHaveLength(50);
+  }, 60000);
+});
+
+describe('stats 端点', () => {
+  const H = { 'x-api-key': 'sk-ok' };
+
+  it('无 Key 401', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ai-router-adm-'));
+    const app = createApp(writeConfig(dir));
+    expect((await app.request('http://localhost/admin/api/stats')).status).toBe(401);
   });
+
+  it('返回聚合结构：totals/byProvider/byModel/byProject/bySession/daily', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ai-router-adm-'));
+    const app = createApp(writeConfig(dir));
+    await sendFailingChat(app, 'user_account_session_st1', '统计测试会话');
+
+    const st = await (
+      await app.request('http://localhost/admin/api/stats', { headers: H })
+    ).json();
+    expect(st.totals.requests).toBe(1);
+    expect(st.totals.errors).toBe(1);
+    // 上游不可达、请求未到达任何厂商：分桶为空,只计入 totals;会话维度仍有记录
+    expect(st.byProvider).toEqual([]);
+    expect(st.byModel).toEqual([]);
+    expect(st.bySession[0]).toMatchObject({ sessionId: 'session_st1', requests: 1, errors: 1 });
+    expect(Array.isArray(st.byProject)).toBe(true);
+    expect(st.daily[0].requests).toBe(1);
+  });
+
+  it('days 参数进入过滤(clamp 且默认 30)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ai-router-adm-'));
+    const app = createApp(writeConfig(dir));
+    await sendFailingChat(app, 'user_account_session_st2', '统计测试会话');
+    for (const q of ['', '?days=0', '?days=99999', '?days=abc']) {
+      const st = await (
+        await app.request(`http://localhost/admin/api/stats${q}`, { headers: H })
+      ).json();
+      expect(st.totals.requests).toBe(1);
+    }
+  }, 30000);
 });

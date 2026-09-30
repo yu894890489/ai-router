@@ -22,9 +22,13 @@ export interface AppState {
   providers: Map<string, Provider>;
   storage: LogStorage;
   breaker: CircuitBreaker;
+  /** 压缩专用厂商级熔断（键为厂商名）：跨请求跳过已挂的压缩厂商，不与转发熔断混用 */
+  compactBreaker: CircuitBreaker;
   sessions: SessionStore;
   /** 会话 -> 上一次请求的客户端 messages（轮次前缀比对用，上限 20 个会话 FIFO 淘汰） */
   turnCache: Map<string, Message[]>;
+  /** 会话 -> 最近一次成功候选的上下文窗口（降级压缩判定用，上限 20 个会话 FIFO 淘汰） */
+  sessionWindows: Map<string, number>;
 }
 
 function anthropicError(type: string, message: string) {
@@ -37,8 +41,10 @@ function buildState(config: RouterConfig): AppState {
     providers: createProviders(config),
     storage: createStorage(config.storage),
     breaker: new CircuitBreaker(config.failover.failureThreshold, config.failover.cooldownSeconds),
+    compactBreaker: new CircuitBreaker(config.failover.failureThreshold, config.failover.cooldownSeconds),
     sessions: new SessionStore(config.failover.stickyTtlSeconds),
     turnCache: new Map(),
+    sessionWindows: new Map(),
   };
 }
 
@@ -166,12 +172,14 @@ export function createApp(configPath: string): Hono {
         async (cand) => {
           // 每次尝试开头重置，避免前一厂商的压缩结果残留到未触发压缩的厂商
           compactInfo = null;
-          const summarizer = buildSummarizer(config, providers, cand);
+          const summarizer = buildSummarizer(config, providers, cand, state.compactBreaker);
+          const prevWindow = sessionId ? (state.sessionWindows.get(sessionId) ?? null) : null;
           const guarded = await guardContext(
             body,
             cand.provider.contextWindowFor(cand.alias),
             config.compact,
             summarizer,
+            prevWindow,
           );
           lastBefore = guarded.before;
           if (guarded.compacted) {
@@ -187,6 +195,14 @@ export function createApp(configPath: string): Hono {
 
       // compactInfo 在回调闭包内赋值，TS 控制流会把它窄化为 null，这里显式还原声明类型
       touchSession();
+      // 记录会话最近成功候选的窗口，供下次请求的降级压缩判定（曾经 ≥1M、现在 <1M 才压）
+      if (sessionId) {
+        if (state.sessionWindows.size >= 20) {
+          const oldest = state.sessionWindows.keys().next().value;
+          if (oldest !== undefined) state.sessionWindows.delete(oldest);
+        }
+        state.sessionWindows.set(sessionId, candidate.provider.contextWindowFor(candidate.alias));
+      }
       const compact = compactInfo as { before: number; after: number } | null;
       const baseLog = {
         provider: candidate.provider.name,

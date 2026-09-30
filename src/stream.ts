@@ -1,5 +1,19 @@
 import type { Usage } from './types.js';
 
+/** 识别 SSE 事件中的错误并给出原文；非错误事件返回 null。
+ *  支持两种形态：Anthropic 标准 {type:"error",error:{message}}，
+ *  以及部分上游的非标准 {code,message}（无 type，如 bailian Throttling）。 */
+function eventErrorText(json: Record<string, unknown>): string | null {
+  if (json.type === 'error') {
+    const e = json.error as { message?: string } | undefined;
+    return e?.message ?? '上游返回了未携带详情的错误事件';
+  }
+  if (json.type === undefined && typeof json.code === 'string' && typeof json.message === 'string') {
+    return `${json.code}: ${json.message}`;
+  }
+  return null;
+}
+
 function* parseSseEvents(buffer: { text: string }): Generator<Record<string, unknown>> {
   const events = buffer.text.split('\n\n');
   buffer.text = events.pop() ?? '';
@@ -73,10 +87,9 @@ export function teeUsage(stream: ReadableStream<Uint8Array>): {
       } else if (json.type === 'message_delta') {
         const u = json.usage as Usage | undefined;
         if (u) output = u.output_tokens ?? output;
-      } else if (json.type === 'error' && firstError === null) {
-        // 上游把错误混在 SSE 流里（type:"error"）：捕获原文，字节仍原样透传给客户端
-        const e = json.error as { message?: string; type?: string } | undefined;
-        firstError = e?.message ?? '上游返回了未携带详情的错误事件';
+      } else if (firstError === null) {
+        // 上游把错误混在 SSE 流里：捕获原文，字节仍原样透传给客户端
+        firstError = eventErrorText(json);
       }
     }
   };
@@ -136,9 +149,9 @@ export async function collectStreamToMessage(
     if (done) break;
     buffer.text += decoder.decode(value, { stream: true });
     for (const json of parseSseEvents(buffer)) {
-      if (json.type === 'error' && firstError === null) {
-        const e = json.error as { message?: string } | undefined;
-        firstError = e?.message ?? '上游返回了未携带详情的错误事件';
+      const errText = eventErrorText(json);
+      if (errText !== null) {
+        if (firstError === null) firstError = errText; // 上游 SSE error 事件的原文
       } else if (json.type === 'message_stop') {
         sawStop = true;
       } else if (json.type === 'message_start') {

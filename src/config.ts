@@ -36,10 +36,14 @@ const configSchema = z.object({
     targetRatio: z.number().min(0.1).max(1).default(0.7),
     keepRecentTurns: z.number().int().min(1).default(6),
     chunkTokens: z.number().int().positive().default(40000),
-    target: z.string().min(1),
+    // 压缩模型链：单个 ref 或按优先级排列的 ref 列表；首选失败后切链上其他厂商
+    target: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
     fallbackToTarget: z.boolean().default(true),
-    timeoutMs: z.number().int().positive().default(180000), // 总结专用，独立于转发超时（40k token 非流式总结 60s 不够）
+    timeoutMs: z.number().int().positive().default(400000), // 总结专用，独立于转发超时（40k token 非流式总结 180s 实测不够）
     concurrency: z.number().int().min(1).max(8).default(2), // 分块总结并行度
+    // 候选窗口 >= 该值时跳过路由侧压缩：1M 级大窗口由客户端（如 claude code）自行压缩，
+    // 路由侧只在降级到较小窗口（如 256k）时才需要把超窗历史压下来
+    skipIfWindowGte: z.number().int().positive().default(1_000_000),
   }),
   failover: z
     .object({
@@ -130,7 +134,10 @@ export function loadConfig(path: string): RouterConfig {
       checkRef(ref, `routing.rules["${scene}"]`);
     }
   }
-  checkRef(cfg.compact.target, 'compact.target');
+  const compactTargets = Array.isArray(cfg.compact.target) ? cfg.compact.target : [cfg.compact.target];
+  for (const ref of compactTargets) {
+    checkRef(ref, 'compact.target');
+  }
 
   return cfg;
 }

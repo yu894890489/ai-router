@@ -190,6 +190,18 @@ describe('guardContext', () => {
     fallbackToTarget: true,
     timeoutMs: 180000,
     concurrency: 2,
+    skipIfWindowGte: 1_000_000,
+  };
+
+  const overThresholdMessages = (): Message[] => {
+    const messages: Message[] = [];
+    for (let i = 0; i < 10; i++) {
+      messages.push(
+        { role: 'user', content: `q${i} ${'字'.repeat(100)}` },
+        { role: 'assistant', content: `a${i}` },
+      );
+    }
+    return messages;
   };
 
   it('未超阈值时原样返回', async () => {
@@ -218,5 +230,70 @@ describe('guardContext', () => {
     expect(res.compacted).toBe(true);
     expect(res.req.system).toBe('sys');
     expect(res.before).toBeGreaterThan(res.after);
+  });
+
+  it('压缩失败包装为 CompactError：原始错误保留在 cause', async () => {
+    const messages = overThresholdMessages();
+    const req = { model: 'm', max_tokens: 10, system: 'sys', messages };
+    const err: unknown = await guardContext(req, 100, cfg, async () => {
+      throw new Error('上游 bailian 请求超时');
+    }).then(
+      () => null,
+      (e) => e,
+    );
+    expect((err as Error).name).toBe('CompactError');
+    expect((err as { cause: unknown }).cause).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain('上游 bailian 请求超时');
+  });
+
+  it('窗口 >= skipIfWindowGte 时跳过压缩（即使超阈值，1M 模型由客户端自行压缩）', async () => {
+    const cfgSkip = { ...cfg, skipIfWindowGte: 100 };
+    const messages = overThresholdMessages();
+    const req = { model: 'm', max_tokens: 10, system: 'sys', messages };
+    let called = 0;
+    const res = await guardContext(req, 100, cfgSkip, async () => {
+      called++;
+      return '摘要';
+    });
+    expect(res.compacted).toBe(false);
+    expect(res.req.messages).toBe(req.messages);
+    expect(called).toBe(0);
+  });
+
+  it('会话一直用小窗口（prevWindow < skipIfWindowGte）时不压缩，由客户端自行管理', async () => {
+    const messages = overThresholdMessages();
+    const req = { model: 'm', max_tokens: 10, system: 'sys', messages };
+    let called = 0;
+    const res = await guardContext(req, 100, cfg, async () => {
+      called++;
+      return '摘要';
+    }, 100); // 该会话上次成功候选的窗口也是 100（256k 原生）
+    expect(res.compacted).toBe(false);
+    expect(res.req.messages).toBe(req.messages);
+    expect(called).toBe(0);
+  });
+
+  it('会话曾用 >= skipIfWindowGte 的大窗口、现在落到小窗口时压缩（1M 切 256k 降级）', async () => {
+    const messages = overThresholdMessages();
+    const req = { model: 'm', max_tokens: 10, system: 'sys', messages };
+    let called = 0;
+    const res = await guardContext(req, 100, cfg, async () => {
+      called++;
+      return '摘要';
+    }, 1_000_000); // 上次成功候选是 1M 窗口
+    expect(res.compacted).toBe(true);
+    expect(called).toBeGreaterThan(0);
+  });
+
+  it('prevWindow 未知（重启后首个请求）时保守按阈值压缩', async () => {
+    const messages = overThresholdMessages();
+    const req = { model: 'm', max_tokens: 10, system: 'sys', messages };
+    let called = 0;
+    const res = await guardContext(req, 100, cfg, async () => {
+      called++;
+      return '摘要';
+    }, null);
+    expect(res.compacted).toBe(true);
+    expect(called).toBeGreaterThan(0);
   });
 });

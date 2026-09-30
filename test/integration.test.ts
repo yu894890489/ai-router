@@ -49,13 +49,11 @@ function startMock(mode: 'ok' | 'fail500' | 'sseError'): Promise<MockHandle> {
           );
           return;
         }
-        if (last.stream === false) {
-          res.writeHead(200, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ content: [{ type: 'text', text: '压缩摘要内容' }] }));
-          return;
-        }
+        // 压缩总结请求（SUMMARY_PROMPT）现在也走流式（与转发同传输路径），按提示词区分 canned 响应
+        const parsedMsgs = (last as { messages?: Array<{ content?: string }> }).messages ?? [];
+        const isCompact = (parsedMsgs[0]?.content ?? '').includes('你正在压缩');
         res.writeHead(200, { 'content-type': 'text/event-stream' });
-        res.end(sseBody('来自mock的回答'));
+        res.end(isCompact ? sseBody('压缩摘要内容') : sseBody('来自mock的回答'));
       });
     });
     servers.push(s);

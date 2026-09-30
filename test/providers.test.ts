@@ -45,6 +45,17 @@ function cfg(baseUrl: string): ProviderConfig {
 // 调用方永远传模型别名；Provider 内部完成 别名 → 上游名 映射
 const BODY = { model: 'alias-a', max_tokens: 10, messages: [{ role: 'user' as const, content: 'hi' }] };
 
+/** 返回一段完整 SSE 文本回复（message_start → text delta → message_stop） */
+function sseSummary(text: string): string {
+  const ev = (t: string, d: unknown) => `event: ${t}\ndata: ${JSON.stringify(d)}\n\n`;
+  return (
+    ev('message_start', { type: 'message_start', message: { role: 'assistant' } }) +
+    ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text' } }) +
+    ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } }) +
+    ev('message_stop', { type: 'message_stop' })
+  );
+}
+
 describe('providers/base', () => {
   it('resolveModel: 已知别名返回上游模型名', async () => {
     const base = await startMock(() => ({ status: 200, body: '{}' }));
@@ -122,21 +133,178 @@ describe('providers/base', () => {
     await expect(p.send(BODY, 100)).rejects.toBeInstanceOf(ProviderError);
   });
 
-  it('sendSync: 聚合 text 块返回字符串，且内部同样完成别名→上游名映射', async () => {
+  it('sendSync: 走流式传输并聚合 text 块返回字符串（与转发同路径，规避非流式挂死）', async () => {
     let seen = '';
     const base = await startMock((raw) => {
       seen = raw;
       return {
         status: 200,
-        body: JSON.stringify({ content: [{ type: 'text', text: '摘要' }] }),
+        sse: true,
+        body:
+          'event: message_start\ndata: {"type":"message_start","message":{"role":"assistant"}}\n\n' +
+          'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}\n\n' +
+          'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"摘要"}}\n\n' +
+          'event: message_stop\ndata: {"type":"message_stop"}\n\n',
       };
     });
     const p = createAnthropicProvider('x', cfg(base));
     await expect(p.sendSync(BODY, 5000)).resolves.toBe('摘要');
     const sent = JSON.parse(seen);
     expect(sent.model).toBe('vendor-sonnet'); // v2 契约：sendSync 也映射别名
-    expect(sent.stream).toBe(false);
+    expect(sent.stream).toBe(true); // 压缩总结与转发同为流式，避免 coding 端点非流式大 prompt 挂死/重置
   });
+
+  it('sendSync: 200 但返回 JSON（非 SSE）时抛带上游错误详情的 ProviderError', async () => {
+    const base = await startMock(() => ({
+      status: 200,
+      body: JSON.stringify({
+        error: { message: '您已达到本计费周期的用量上限' },
+      }),
+    }));
+    const p = createAnthropicProvider('x', cfg(base));
+    await expect(p.sendSync(BODY, 5000)).rejects.toMatchObject({
+      message: expect.stringContaining('您已达到本计费周期的用量上限'),
+    });
+  });
+
+  it('sendSync: 默认携带 thinking disabled（glm 系思考模型不再吃光输出预算）', async () => {
+    let seen: Record<string, unknown> | null = null;
+    const base = await startMock((raw) => {
+      seen = JSON.parse(raw) as Record<string, unknown>;
+      return { status: 200, sse: true, body: sseSummary('摘要') };
+    });
+    const p = createAnthropicProvider('x', cfg(base));
+    await expect(p.sendSync(BODY, 5000)).resolves.toBe('摘要');
+    expect((seen as unknown as Record<string, unknown>).thinking).toEqual({ type: 'disabled' });
+  });
+
+  it('sendSync: 上游 400 报 thinking 不支持时，自适应去掉参数重试并记住', async () => {
+    let n = 0;
+    const bodies: Array<Record<string, unknown>> = [];
+    const base = await startMock((raw) => {
+      n++;
+      bodies.push(JSON.parse(raw) as Record<string, unknown>);
+      if (bodies.at(-1)?.thinking !== undefined) {
+        return {
+          status: 400,
+          body: JSON.stringify({
+            error: { code: 'InvalidParameter', message: "thinking.type `disabled` is not supported by this model" },
+          }),
+        };
+      }
+      return { status: 200, sse: true, body: sseSummary('摘要') };
+    });
+    const p = createAnthropicProvider('x', cfg(base));
+    // 第一次：带参数被 400 → 去参数重试成功
+    await expect(p.sendSync(BODY, 5000)).resolves.toBe('摘要');
+    expect(n).toBe(2);
+    expect(bodies[0].thinking).toEqual({ type: 'disabled' });
+    expect(bodies[1].thinking).toBeUndefined();
+    // 第二次调用：直接不带参数，只发一次
+    await expect(p.sendSync(BODY, 5000)).resolves.toBe('摘要');
+    expect(n).toBe(3);
+  }, 15000);
+
+  it('sendSync: 上游 400 但与 thinking 无关时不做自适应重试', async () => {
+    let n = 0;
+    const base = await startMock(() => {
+      n++;
+      return { status: 400, body: JSON.stringify({ error: { message: '模型名非法' } }) };
+    });
+    const p = createAnthropicProvider('x', cfg(base));
+    await expect(p.sendSync(BODY, 5000)).rejects.toMatchObject({ status: 400 });
+    expect(n).toBe(1);
+  });
+
+  it('sendSync: SSE error 事件抛 ProviderError', async () => {
+    const base = await startMock(() => ({
+      status: 200,
+      sse: true,
+      body: 'event: error\ndata: {"type":"error","error":{"message":"上游过载"}}\n\n',
+    }));
+    const p = createAnthropicProvider('x', cfg(base));
+    await expect(p.sendSync(BODY, 5000)).rejects.toMatchObject({
+      message: expect.stringContaining('上游过载'),
+    });
+  });
+
+  it('网络错误：ProviderError 带底层 cause（如 ECONNRESET），不再是裸 fetch failed', async () => {
+    // 模拟连接被对端重置：收到请求后直接销毁 socket，不回任何响应
+    const base = await new Promise<string>((resolve) => {
+      server = createServer((req) => {
+        req.socket.destroy();
+      });
+      server.listen(0, '127.0.0.1', () => {
+        resolve(`http://127.0.0.1:${(server!.address() as AddressInfo).port}`);
+      });
+    });
+    const p = createAnthropicProvider('x', cfg(base));
+    const err = (await p.sendSync(BODY, 5000).then(
+      () => null,
+      (e) => e,
+    )) as ProviderError;
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err.message).toContain('网络错误');
+    expect(err.message).toMatch(/closed|ECONNRESET|reset/i); // 底层 cause 可见
+  });
+
+  it('连接级失败自动重试：第一次连接被重置，重试后成功', async () => {
+    let n = 0;
+    const base = await new Promise<string>((resolve) => {
+      server = createServer((req, res) => {
+        n++;
+        if (n === 1) {
+          req.socket.destroy();
+          return;
+        }
+        let raw = '';
+        req.on('data', (c) => (raw += c));
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          res.end(sseSummary('摘要'));
+        });
+      });
+      server.listen(0, '127.0.0.1', () => {
+        resolve(`http://127.0.0.1:${(server!.address() as AddressInfo).port}`);
+      });
+    });
+    const p = createAnthropicProvider('x', cfg(base));
+    await expect(p.sendSync(BODY, 5000)).resolves.toBe('摘要');
+    expect(n).toBe(2);
+  }, 15000);
+
+  it('连接级失败重试上限 3 次：持续重置最终抛 ProviderError', async () => {
+    let n = 0;
+    const base = await new Promise<string>((resolve) => {
+      server = createServer((req) => {
+        n++;
+        req.socket.destroy();
+      });
+      server.listen(0, '127.0.0.1', () => {
+        resolve(`http://127.0.0.1:${(server!.address() as AddressInfo).port}`);
+      });
+    });
+    const p = createAnthropicProvider('x', cfg(base));
+    await expect(p.sendSync(BODY, 5000)).rejects.toBeInstanceOf(ProviderError);
+    expect(n).toBe(3);
+  }, 15000);
+
+  it('超时（AbortError）不重试：重试只针对连接级瞬断', async () => {
+    let n = 0;
+    const base = await new Promise<string>((resolve) => {
+      server = createServer(() => {
+        n++; // 收到请求但永不响应
+      });
+      server.listen(0, '127.0.0.1', () => {
+        resolve(`http://127.0.0.1:${(server!.address() as AddressInfo).port}`);
+      });
+    });
+    const p = createAnthropicProvider('x', cfg(base));
+    await expect(p.sendSync(BODY, 200)).rejects.toMatchObject({
+      message: expect.stringContaining('请求超时'),
+    });
+    expect(n).toBe(1);
+  }, 15000);
 
   it('sendSync: 未知别名不发请求直接抛 ProviderError（retriable=false）', async () => {
     let called = false;

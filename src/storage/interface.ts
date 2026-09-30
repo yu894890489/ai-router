@@ -70,6 +70,39 @@ export interface SearchBackend {
   search(query: string, filter?: { project?: string; sessionId?: string; limit?: number }): SearchHit[];
 }
 
+/** 用量统计的一个分组桶（按厂商/模型/项目等维度） */
+export interface StatsBucket {
+  key: string;
+  requests: number;
+  errors: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/** 会话维度：联表带出标题与项目；无会话行的请求 title/project 为 null */
+export interface SessionStatsBucket extends StatsBucket {
+  sessionId: string;
+  title: string | null;
+  project: string | null;
+}
+
+export interface DailyStatsBucket {
+  /** 本地时区日期 YYYY-MM-DD */
+  date: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface UsageStats {
+  totals: { requests: number; errors: number; inputTokens: number; outputTokens: number };
+  byProvider: StatsBucket[];
+  byModel: StatsBucket[];
+  byProject: StatsBucket[];
+  bySession: SessionStatsBucket[];
+  daily: DailyStatsBucket[];
+}
+
 export interface LogStorage {
   findRequest(id: string): { id: string; project: string; createdAt: string } | null;
   start(entry: NewRequestLog): string;
@@ -81,5 +114,7 @@ export interface LogStorage {
     listTurns(sessionId: string): Turn[];
     search: SearchBackend;
   };
+  /** 用量统计聚合：days>0 只看最近 N 天，0 为全部 */
+  stats: { aggregate(days: number): UsageStats };
   close(): void;
 }

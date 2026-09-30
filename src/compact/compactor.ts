@@ -2,6 +2,18 @@ import type { Message } from '../types.js';
 
 export type Summarizer = (text: string) => Promise<string>;
 
+/**
+ * 压缩阶段错误：转发熔断不计入。压缩是低频大块非流式负载，其超时不代表
+ * 同一上游的转发路径（流式对话）不可用；计入熔断会用数次压缩超时错误地
+ * 打掉健康的转发目标。
+ */
+export class CompactError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'CompactError';
+  }
+}
+
 export interface CompactOptions {
   keepRecentTurns: number;
   targetTokens: number;

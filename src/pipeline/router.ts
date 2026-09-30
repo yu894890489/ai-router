@@ -1,4 +1,5 @@
 import type { AnthropicRequest } from '../types.js';
+import { CompactError } from '../compact/compactor.js';
 import {
   ProviderError,
   type Provider,
@@ -69,6 +70,8 @@ export async function executeWithFailover(
       lastError = e;
       if (e instanceof ProviderError && (e.status === 401 || e.status === 403)) {
         breaker.ban(candidate.ref); // Key 问题：封禁而非盲切
+      } else if (e instanceof CompactError) {
+        // 压缩失败不计入转发熔断（详见 CompactError 注释），但请求仍失败并继续 failover
       } else {
         breaker.recordFailure(candidate.ref);
       }

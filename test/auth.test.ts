@@ -83,4 +83,15 @@ describe('auth', () => {
     expect(extractSessionId(req)).toBe('session_9f8e7d6c');
     expect(extractSessionId(REQ)).toBeNull();
   });
+
+  it('extractSessionId：user_id 为 JSON 串时解析 session_id 字段，不产生切片残片', () => {
+    const req: AnthropicRequest = {
+      ...REQ,
+      metadata: {
+        user_id:
+          '{"device_id":"bb3f9bc0","account_uuid":"","session_id":"32effb35-9fd0-4a9d-884d-365879556a52"}',
+      },
+    };
+    expect(extractSessionId(req)).toBe('32effb35-9fd0-4a9d-884d-365879556a52');
+  });
 });

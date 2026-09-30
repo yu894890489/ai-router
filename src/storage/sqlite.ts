@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { LogStorage, NewRequestLog, NewTurn, RequestLogPatch, SearchBackend, SessionDirectory, SessionInfo, Turn } from './interface.js';
+import type { LogStorage, NewRequestLog, NewTurn, RequestLogPatch, SearchBackend, SessionDirectory, SessionInfo, Turn, UsageStats } from './interface.js';
 import { createLikeBackend, createSqliteFtsBackend } from './search.js';
 
 const DDL = `
@@ -108,7 +108,16 @@ export function createSqliteStorage(path: string): LogStorage {
          VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(session_id) DO UPDATE SET
            last_seen = excluded.last_seen,
-           last_tokens = excluded.last_tokens`,
+           last_tokens = excluded.last_tokens,
+           -- title 首次写入；旧值为噪声（空/占位/以标签或 Caveat 开头的历史数据）时被有效新值自愈覆盖
+           title = CASE
+             WHEN sessions.title = ''
+               OR sessions.title = '（无标题）'
+               OR sessions.title LIKE '<%'
+               OR sessions.title LIKE 'Caveat:%'
+             THEN excluded.title
+             ELSE sessions.title
+           END`,
       ).run(s.sessionId, s.project, s.title, s.tokens, now, now);
     },
     setOverride(sessionId, ref) {
@@ -132,6 +141,73 @@ export function createSqliteStorage(path: string): LogStorage {
         .all(limit) as unknown as SessionRow[];
       return rows.map(toInfo);
     },
+  };
+
+  // ---- 用量统计聚合（days>0 只看最近 N 天，0 为全部；日桶按本地时区）----
+  const statsAggregate = (days: number): UsageStats => {
+    const d = Math.max(0, Math.floor(days));
+    const where = d > 0 ? `WHERE created_at >= datetime('now', '-${d} days')` : '';
+    const whereSession =
+      d > 0
+        ? `WHERE r.created_at >= datetime('now', '-${d} days') AND r.session_id IS NOT NULL`
+        : 'WHERE r.session_id IS NOT NULL';
+    // 分桶排除 NULL 键：从未到达厂商的请求(provider 为空)只计入 totals，不属于任何厂商
+    const whereKey = (col: string) =>
+      `${where} ${where ? 'AND' : 'WHERE'} ${col} IS NOT NULL`;
+    const bucketRows = (groupCol: string, w: string) =>
+      db
+        .prepare(
+          `SELECT ${groupCol} AS key, COUNT(*) AS requests,
+                  COALESCE(SUM(status = 'error'), 0) AS errors,
+                  COALESCE(SUM(input_tokens), 0) AS inputTokens,
+                  COALESCE(SUM(output_tokens), 0) AS outputTokens
+           FROM requests ${w}
+           GROUP BY ${groupCol}
+           ORDER BY (COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0)) DESC, key ASC`,
+        )
+        .all() as unknown as UsageStats['byProvider'];
+    const totals = (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS requests,
+                  COALESCE(SUM(status = 'error'), 0) AS errors,
+                  COALESCE(SUM(input_tokens), 0) AS inputTokens,
+                  COALESCE(SUM(output_tokens), 0) AS outputTokens
+           FROM requests ${where}`,
+        )
+        .get() as { requests: number; errors: number; inputTokens: number; outputTokens: number }
+    );
+    const bySession = db
+      .prepare(
+        `SELECT r.session_id AS sessionId, MAX(s.title) AS title, MAX(s.project) AS project,
+                COUNT(*) AS requests,
+                COALESCE(SUM(r.status = 'error'), 0) AS errors,
+                COALESCE(SUM(r.input_tokens), 0) AS inputTokens,
+                COALESCE(SUM(r.output_tokens), 0) AS outputTokens
+         FROM requests r LEFT JOIN sessions s ON s.session_id = r.session_id
+         ${whereSession}
+         GROUP BY r.session_id
+         ORDER BY (COALESCE(SUM(r.input_tokens), 0) + COALESCE(SUM(r.output_tokens), 0)) DESC
+         LIMIT 20`,
+      )
+      .all() as unknown as UsageStats['bySession'];
+    const daily = db
+      .prepare(
+        `SELECT date(created_at, 'localtime') AS date, COUNT(*) AS requests,
+                COALESCE(SUM(input_tokens), 0) AS inputTokens,
+                COALESCE(SUM(output_tokens), 0) AS outputTokens
+         FROM requests ${where}
+         GROUP BY date ORDER BY date ASC`,
+      )
+      .all() as unknown as UsageStats['daily'];
+    return {
+      totals,
+      byProvider: bucketRows('provider', whereKey('provider')),
+      byModel: bucketRows('upstream_model', whereKey('upstream_model')),
+      byProject: bucketRows('project', whereKey('project')),
+      bySession,
+      daily,
+    };
   };
 
   return {
@@ -202,6 +278,8 @@ export function createSqliteStorage(path: string): LogStorage {
       },
       search: searchBackend,
     },
+
+    stats: { aggregate: statsAggregate },
 
     close(): void {
       db.close();

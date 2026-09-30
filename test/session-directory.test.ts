@@ -17,6 +17,31 @@ describe('SessionDirectory', () => {
     s.close();
   });
 
+  it('旧噪声标题（标签开头/占位符/空）被后续有效标题覆盖', () => {
+    const s = makeStorage();
+    s.sessions.touchSession({
+      sessionId: 'session_n1',
+      project: 'p1',
+      title: '<system-reminder>SessionStart hook additional context...</system-reminder>',
+      tokens: 1,
+    });
+    s.sessions.touchSession({ sessionId: 'session_n1', project: 'p1', title: '真实的用户问题', tokens: 2 });
+    expect(s.sessions.getSession('session_n1')?.title).toBe('真实的用户问题');
+
+    s.sessions.touchSession({ sessionId: 'session_n2', project: 'p1', title: '（无标题）', tokens: 1 });
+    s.sessions.touchSession({ sessionId: 'session_n2', project: 'p1', title: '第二个问题', tokens: 2 });
+    expect(s.sessions.getSession('session_n2')?.title).toBe('第二个问题');
+    s.close();
+  });
+
+  it('有效标题不被噪声新值覆盖', () => {
+    const s = makeStorage();
+    s.sessions.touchSession({ sessionId: 'session_g', project: 'p1', title: '好标题', tokens: 1 });
+    s.sessions.touchSession({ sessionId: 'session_g', project: 'p1', title: '（无标题）', tokens: 2 });
+    expect(s.sessions.getSession('session_g')?.title).toBe('好标题');
+    s.close();
+  });
+
   it('setOverride/getOverride 往返，null 清除', () => {
     const s = makeStorage();
     s.sessions.touchSession({ sessionId: 'session_b', project: 'p1', title: 't', tokens: 1 });

@@ -57,8 +57,13 @@ compact:
   targetRatio: 0.7         # 压缩后期望降到目标窗口 × 此值
   keepRecentTurns: 6       # 最近 N 轮原样保留（1 轮 = user + assistant，含工具块）
   chunkTokens: 40000       # 历史切分块大小
-  target: bailian/glm-5    # 压缩总结首选（"厂商/别名" ref，便宜模型）
-  fallbackToTarget: true   # 首选失败时用当前转发目标兜底
+  # 压缩模型链（按优先级，"厂商/别名" ref）：一家失败后切链上下一家不同厂商，
+  # 同厂商其余模型不再重试；链尾自动追加当前转发目标兜底（fallbackToTarget）
+  target: [bailian/glm-5, volcengine/glm-5.3-flash, kimi/k3]
+  fallbackToTarget: true   # 链耗尽前最后落到当前转发目标
+  timeoutMs: 400000        # 单次总结请求超时（非流式大块总结，180s 实测不够）
+  concurrency: 1           # 分块总结并行度（bailian 等编码端点对并发大块请求限流，建议 1）
+  skipIfWindowGte: 1000000 # 候选窗口 >= 此值时跳过路由侧压缩（1M 模型由 claude code 自行压缩，降级到 256k 时才压缩）
 
 failover:
   stickyTtlSeconds: 300    # session 粘性 TTL

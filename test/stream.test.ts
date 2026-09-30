@@ -97,6 +97,21 @@ describe('collectStreamToMessage', () => {
     );
   });
 
+  it('非 Anthropic 格式的错误事件（bailian Throttling：{code,message} 无 type）也抛出上游原文', async () => {
+    const events: Array<[string, unknown]> = [
+      ['ping', { type: 'ping' }],
+      ['error', { code: 'Throttling', message: 'Request rate increased too quickly.' }],
+    ];
+    await expect(collectStreamToMessage(sse(events))).rejects.toThrow(
+      'Throttling: Request rate increased too quickly.',
+    );
+  });
+
+  it('带 type 的普通事件（如 message_delta 的 usage 对象）不会被误判为非标准错误', async () => {
+    const msg = await collectStreamToMessage(sse(EVENTS));
+    expect(msg.content).toHaveLength(1);
+  });
+
   it('部分聚合后被 error 事件打断（无 message_stop）：抛上游原文，不返回残缺 message', async () => {
     const events: Array<[string, unknown]> = [
       ['message_start', { type: 'message_start', message: { id: 'msg_p', type: 'message', role: 'assistant', model: 'm', content: [], usage: { input_tokens: 42, output_tokens: 1 } } }],

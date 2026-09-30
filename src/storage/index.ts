@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { StorageConfig } from '../config.js';
-import type { LogStorage, NewRequestLog, NewTurn, RequestLogPatch, SearchHit, SessionInfo } from './interface.js';
+import type { LogStorage, NewRequestLog, NewTurn, RequestLogPatch, SearchHit, SessionInfo, UsageStats } from './interface.js';
 import { createJsonlWriter } from './jsonl.js';
 import { createSqliteStorage } from './sqlite.js';
 
@@ -99,6 +99,24 @@ export function createStorage(cfg: StorageConfig): LogStorage {
           });
           return v;
         },
+      },
+    },
+
+    stats: {
+      aggregate(days: number): UsageStats {
+        const empty: UsageStats = {
+          totals: { requests: 0, errors: 0, inputTokens: 0, outputTokens: 0 },
+          byProvider: [],
+          byModel: [],
+          byProject: [],
+          bySession: [],
+          daily: [],
+        };
+        let v: UsageStats = empty;
+        safe(() => {
+          v = db.stats.aggregate(days);
+        });
+        return v;
       },
     },
 

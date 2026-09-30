@@ -107,8 +107,10 @@ describe('applyConfigReload', () => {
       providers: createProviders(config),
       storage: null as unknown as AppState['storage'],
       breaker,
+      compactBreaker: new CircuitBreaker(3, 60),
       sessions: null as unknown as AppState['sessions'],
       turnCache: new Map(),
+      sessionWindows: new Map(),
     };
   }
 

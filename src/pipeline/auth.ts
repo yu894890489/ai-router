@@ -47,6 +47,16 @@ export function resolveProject(
 export function extractSessionId(req: AnthropicRequest): string | null {
   const uid = req.metadata?.user_id;
   if (typeof uid !== 'string' || uid.length === 0) return null;
+  // 部分客户端把 user_id 发成 JSON 串（如 {"device_id":...,"session_id":"<uuid>"}），
+  // 直接按 "session_" 切片会切在键名上产生 `session_id":"..."}` 残片，先尝试解析
+  if (uid.startsWith('{')) {
+    try {
+      const sid = (JSON.parse(uid) as { session_id?: unknown }).session_id;
+      if (typeof sid === 'string' && sid) return sid;
+    } catch {
+      // 非 JSON，走原逻辑
+    }
+  }
   const i = uid.lastIndexOf('session_');
   return i >= 0 ? uid.slice(i) : uid;
 }
